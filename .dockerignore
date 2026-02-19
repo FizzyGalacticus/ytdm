@@ -1,0 +1,37 @@
+# Ignore version control
+.git
+.gitignore
+
+# Ignore build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+media_downloader
+
+# Ignore test files
+*_test.go
+*.test
+*.out
+
+# Ignore runtime files
+config.json
+data.json
+downloads/
+
+# Ignore IDE files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore documentation
+README.md
+LICENSE
+*.md

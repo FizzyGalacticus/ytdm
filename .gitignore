@@ -1,0 +1,61 @@
+# Binary and build artifacts
+media_downloader
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.dll
+
+# Go
+.go
+vendor/
+go.sum
+
+# Local environment
+.env
+.env.local
+
+# Data directory (persistent data, config, cookies)
+data/
+data_local/
+
+# Downloads directory
+downloads/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+*.bak
+*.backup
+
+# IDE and editor files
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# OS specific files
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Docker volumes
+.docker/
+
+# Test/temporary scripts
+test-*.sh
+convert-*.py
+check-*.sh
+
+# Cookie/config extraction files
+cookies.json
+cookies.txt
+
+# IDE settings/launch configurations that aren't project-critical
+.vscode/launch.json
+.vscode/settings.json
