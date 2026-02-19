@@ -1,0 +1,411 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+)
+
+//go:embed static/*
+var staticFiles embed.FS
+
+// APIResponse is a generic response structure
+type APIResponse struct {
+	Success bool        `json:"success"`
+	Message string      `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+// APIServer holds the server state
+type APIServer struct {
+	config  *Config
+	storage *Storage
+	server  *http.Server
+}
+
+// StartAPIServer starts the HTTP API server
+func StartAPIServer(ctx context.Context, config *Config, storage *Storage) {
+	api := &APIServer{
+		config:  config,
+		storage: storage,
+	}
+
+	mux := http.NewServeMux()
+
+	// API endpoints
+	mux.HandleFunc("/api/channels", api.handleChannels)
+	mux.HandleFunc("/api/channels/", api.handleChannelByID)
+	mux.HandleFunc("/api/videos", api.handleVideos)
+	mux.HandleFunc("/api/videos/", api.handleVideoByID)
+	mux.HandleFunc("/api/config", api.handleConfig)
+	mux.HandleFunc("/api/cookies", api.handleCookies)
+	mux.HandleFunc("/api/cookies/clear", api.handleClearCookies)
+	mux.HandleFunc("/api/status", api.handleStatus)
+
+	// Static file server from embedded files
+	staticFS, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		log.Fatalf("Failed to load embedded static files: %v", err)
+	}
+	fs := http.FileServer(http.FS(staticFS))
+	mux.Handle("/", fs)
+
+	api.server = &http.Server{
+		Addr:    fmt.Sprintf(":%d", config.APIPort),
+		Handler: mux,
+	}
+
+	// Start server in goroutine
+	go func() {
+		log.Printf("API server listening on :%d", config.APIPort)
+		if err := api.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("API server error: %v", err)
+		}
+	}()
+
+	// Wait for context cancellation
+	<-ctx.Done()
+
+	// Graceful shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := api.server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("API server shutdown error: %v", err)
+	}
+	log.Println("API server stopped")
+}
+
+// handleChannels handles GET and POST for channels
+func (api *APIServer) handleChannels(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		api.getChannels(w, r)
+	case http.MethodPost:
+		api.addChannel(w, r)
+	default:
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// getChannels returns all channels
+func (api *APIServer) getChannels(w http.ResponseWriter, r *http.Request) {
+	channels := api.storage.GetChannels()
+	api.sendSuccess(w, channels)
+}
+
+// addChannel adds a new channel
+func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
+	var channel Channel
+	if err := json.NewDecoder(r.Body).Decode(&channel); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Generate ID from URL if not provided
+	if channel.ID == "" {
+		channel.ID = extractIDFromURL(channel.URL)
+	}
+
+	// Use default retention if not specified
+	if channel.RetentionDays == 0 {
+		channel.RetentionDays = api.config.RetentionDays
+	}
+
+	if err := api.storage.AddChannel(channel); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add channel: %v", err))
+		return
+	}
+
+	log.Printf("Channel added via API: %s", channel.Name)
+	api.sendSuccess(w, channel)
+}
+
+// handleChannelByID handles DELETE for a specific channel
+func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) {
+	// Extract ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 {
+		api.sendError(w, http.StatusBadRequest, "Invalid channel ID")
+		return
+	}
+	id := parts[3]
+
+	switch r.Method {
+	case http.MethodDelete:
+		if err := api.storage.RemoveChannel(id); err != nil {
+			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove channel: %v", err))
+			return
+		}
+		log.Printf("Channel removed via API: %s", id)
+		api.sendSuccess(w, map[string]string{"id": id})
+	default:
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// handleVideos handles GET and POST for videos
+func (api *APIServer) handleVideos(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		api.getVideos(w, r)
+	case http.MethodPost:
+		api.addVideo(w, r)
+	default:
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// getVideos returns all videos
+func (api *APIServer) getVideos(w http.ResponseWriter, r *http.Request) {
+	videos := api.storage.GetVideos()
+	api.sendSuccess(w, videos)
+}
+
+// addVideo adds a new video
+func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
+	var video Video
+	if err := json.NewDecoder(r.Body).Decode(&video); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Generate ID from URL if not provided
+	if video.ID == "" {
+		video.ID = extractIDFromURL(video.URL)
+	}
+
+	// Use default retention if not specified
+	if video.RetentionDays == 0 {
+		video.RetentionDays = api.config.RetentionDays
+	}
+
+	if err := api.storage.AddVideo(video); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add video: %v", err))
+		return
+	}
+
+	log.Printf("Video added via API: %s", video.Title)
+	api.sendSuccess(w, video)
+}
+
+// handleVideoByID handles DELETE for a specific video
+func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
+	// Extract ID from path
+	parts := strings.Split(r.URL.Path, "/")
+	if len(parts) < 4 {
+		api.sendError(w, http.StatusBadRequest, "Invalid video ID")
+		return
+	}
+	id := parts[3]
+
+	switch r.Method {
+	case http.MethodDelete:
+		if err := api.storage.RemoveVideo(id); err != nil {
+			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove video: %v", err))
+			return
+		}
+		log.Printf("Video removed via API: %s", id)
+		api.sendSuccess(w, map[string]string{"id": id})
+	default:
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// handleConfig handles GET and PUT for configuration
+func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		api.getConfig(w, r)
+	case http.MethodPut:
+		api.updateConfig(w, r)
+	default:
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
+// getConfig returns the current configuration
+func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
+	configData := map[string]interface{}{
+		"check_interval_seconds":          int(api.config.CheckInterval.Seconds()),
+		"retention_days":                  api.config.RetentionDays,
+		"download_dir":                    api.config.DownloadDir,
+		"file_name_pattern":               api.config.FileNamePattern,
+		"api_port":                        api.config.APIPort,
+		"max_concurrent_downloads":        api.config.MaxConcurrent,
+		"yt_dlp_path":                     api.config.YtDlpPath,
+		"yt_dlp_update_interval_seconds":  int(api.config.YtDlpUpdateInterval.Seconds()),
+	}
+	api.sendSuccess(w, configData)
+}
+
+// updateConfig updates the configuration
+func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
+	var updates map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Update config fields
+	if val, ok := updates["check_interval_seconds"].(float64); ok {
+		api.config.CheckInterval = time.Duration(val) * time.Second
+	}
+	if val, ok := updates["retention_days"].(float64); ok {
+		api.config.RetentionDays = int(val)
+	}
+	if val, ok := updates["download_dir"].(string); ok {
+		api.config.DownloadDir = val
+	}
+	if val, ok := updates["file_name_pattern"].(string); ok {
+		api.config.FileNamePattern = val
+	}
+	if val, ok := updates["max_concurrent_downloads"].(float64); ok {
+		api.config.MaxConcurrent = int(val)
+	}
+	if val, ok := updates["yt_dlp_update_interval_seconds"].(float64); ok {
+		api.config.YtDlpUpdateInterval = time.Duration(val) * time.Second
+	}
+	if val, ok := updates["cookies_browser"].(string); ok {
+		api.config.CookiesBrowser = val
+	}
+	if val, ok := updates["cookies_file"].(string); ok {
+		api.config.CookiesFile = val
+	}
+
+	// Save config
+	if err := api.config.Save("data/config.json"); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to save config: %v", err))
+		return
+	}
+
+	// Reload config from disk to ensure consistency
+	if err := api.config.ReloadFromDisk("data/config.json"); err != nil {
+		log.Printf("Warning: Failed to reload config from disk: %v", err)
+	}
+
+	log.Println("Configuration updated via API and reloaded")
+	api.sendSuccess(w, map[string]string{"message": "Configuration updated and reloaded"})
+}
+
+// handleCookies handles POST requests to save Netscape format cookies
+func (api *APIServer) handleCookies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	type cookieRequest struct {
+		CookieText string `json:"cookie_text"`
+	}
+
+	var req cookieRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
+		return
+	}
+
+	// Save cookies to data/cookies.txt
+	cookiePath := "data/cookies.txt"
+	if err := os.WriteFile(cookiePath, []byte(req.CookieText), 0644); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to save cookies: %v", err))
+		return
+	}
+
+	// Update config to use the cookies file
+	api.config.Lock()
+	api.config.CookiesBrowser = ""
+	api.config.CookiesFile = "data/cookies.txt"
+	api.config.Unlock()
+
+	// Save config to disk
+	if err := api.config.Save("data/config.json"); err != nil {
+		log.Printf("Warning: Failed to save config: %v", err)
+	}
+
+	api.sendSuccess(w, map[string]string{"message": "Cookies saved successfully"})
+}
+
+// handleClearCookies handles POST requests to clear all cookies
+func (api *APIServer) handleClearCookies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	// Clear cookies file
+	cookiePath := "data/cookies.txt"
+	if err := os.WriteFile(cookiePath, []byte("# Netscape HTTP Cookie File\n# Cookies cleared\n"), 0644); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to clear cookies: %v", err))
+		return
+	}
+
+	// Update config to disable cookies
+	api.config.Lock()
+	api.config.CookiesBrowser = ""
+	api.config.CookiesFile = ""
+	api.config.Unlock()
+
+	// Save config to disk
+	if err := api.config.Save("data/config.json"); err != nil {
+		log.Printf("Warning: Failed to save config: %v", err)
+	}
+
+	api.sendSuccess(w, map[string]string{"message": "Cookies cleared successfully"})
+}
+
+// handleStatus returns the current status
+func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	status := map[string]interface{}{
+		"channels_count": len(api.storage.GetChannels()),
+		"videos_count":   len(api.storage.GetVideos()),
+		"uptime":         time.Now().Format(time.RFC3339),
+	}
+	api.sendSuccess(w, status)
+}
+
+// sendSuccess sends a successful JSON response
+func (api *APIServer) sendSuccess(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(APIResponse{
+		Success: true,
+		Data:    data,
+	})
+}
+
+// sendError sends an error JSON response
+func (api *APIServer) sendError(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(APIResponse{
+		Success: false,
+		Message: message,
+	})
+}
+
+// extractIDFromURL extracts the video/channel ID from a YouTube URL
+func extractIDFromURL(url string) string {
+	// Simple extraction - works for most YouTube URLs
+	parts := strings.Split(url, "/")
+	if len(parts) > 0 {
+		lastPart := parts[len(parts)-1]
+		// Remove query parameters
+		if idx := strings.Index(lastPart, "?"); idx != -1 {
+			return lastPart[:idx]
+		}
+		return lastPart
+	}
+	return url
+}

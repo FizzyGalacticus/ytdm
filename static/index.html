@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Media Downloader</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body { 
+            padding-top: 20px; 
+            background-color: #212529;
+            color: #dee2e6;
+        }
+        .section-header { 
+            margin-top: 30px; 
+            margin-bottom: 20px; 
+        }
+        .last-checked { 
+            font-size: 0.85em; 
+            color: #adb5bd; 
+        }
+        .status-badge { 
+            margin-left: 10px; 
+        }
+        .card {
+            background-color: #2b3035;
+            border-color: #495057;
+        }
+        .card-body {
+            color: #dee2e6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="mb-4">
+            <h1><i class="bi bi-youtube"></i> YouTube Media Downloader</h1>
+            <p class="lead">Manage your YouTube channel and video downloads</p>
+        </header>
+
+        <!-- Status Section -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-info-circle"></i> Status</h5>
+                <div id="status">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Channels Section -->
+        <div class="section-header">
+            <h2><i class="bi bi-collection-play"></i> Channels</h2>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Add New Channel</h5>
+                <form id="addChannelForm">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <input type="text" class="form-control" id="channelName" placeholder="Channel Name" required>
+                        </div>
+                        <div class="col-md-3">
+                            <input type="url" class="form-control" id="channelURL" placeholder="Channel URL" required>
+                        </div>
+                        <div class="col-md-2">
+                            <input type="number" class="form-control" id="channelRetention" placeholder="Retention (days)" min="1">
+                        </div>
+                        <div class="col-md-2">
+                            <input type="date" class="form-control" id="channelCutoffDate" placeholder="Cutoff Date">
+                            <small class="text-muted">Ignore older videos</small>
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-circle"></i> Add</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Monitored Channels</h5>
+                <div id="channelsList">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Videos Section -->
+        <div class="section-header">
+            <h2><i class="bi bi-play-circle"></i> Videos</h2>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h5 class="card-title">Add New Video</h5>
+                <form id="addVideoForm">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <input type="text" class="form-control" id="videoTitle" placeholder="Video Title" required>
+                        </div>
+                        <div class="col-md-4">
+                            <input type="url" class="form-control" id="videoURL" placeholder="Video URL" required>
+                        </div>
+                        <div class="col-md-2">
+                            <input type="number" class="form-control" id="videoRetention" placeholder="Retention (days)" min="1">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-circle"></i> Add</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-body">
+                <h5 class="card-title">Monitored Videos</h5>
+                <div id="videosList">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Configuration Section -->
+        <div class="section-header">
+            <h2><i class="bi bi-gear"></i> Configuration</h2>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-body">
+                <form id="configForm">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label for="checkInterval" class="form-label">Check Interval (seconds)</label>
+                            <input type="number" class="form-control" id="checkInterval" min="60" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="retentionDays" class="form-label">Retention Days</label>
+                            <input type="number" class="form-control" id="retentionDays" min="1" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="downloadDir" class="form-label">Download Directory</label>
+                            <input type="text" class="form-control" id="downloadDir" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="maxConcurrent" class="form-label">Max Concurrent Downloads</label>
+                            <input type="number" class="form-control" id="maxConcurrent" min="1" max="10" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="ytDlpUpdateInterval" class="form-label">yt-dlp Update Interval (seconds)</label>
+                            <input type="number" class="form-control" id="ytDlpUpdateInterval" min="0" required>
+                            <small class="text-muted">Set to 0 to disable auto-updates</small>
+                        </div>
+                        <div class="col-12">
+                            <label for="fileNamePattern" class="form-label">File Name Pattern</label>
+                            <input type="text" class="form-control" id="fileNamePattern" required>
+                        </div>
+                        <div class="col-12">
+                            <div class="alert alert-info">
+                                <strong>Cookies Configuration (Optional)</strong><br>
+                                <small>Use cookies to bypass YouTube's "sign in to confirm you're not a bot" errors.</small>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="cookiesBrowser" class="form-label">Browser Cookie Source</label>
+                            <select class="form-control" id="cookiesBrowser">
+                                <option value="">Disabled</option>
+                                <option value="firefox">Firefox</option>
+                                <option value="chrome">Chrome</option>
+                            </select>
+                            <small class="text-muted">Extract cookies from your browser</small>
+                        </div>
+                        <div class="col-12">
+                            <label for="cookiesPaste" class="form-label">Or Paste Cookies (Netscape Format)</label>
+                            <textarea class="form-control" id="cookiesPaste" rows="6" placeholder="# Netscape HTTP Cookie File&#10;# Paste your cookies here...&#10;.youtube.com	TRUE	/	TRUE	1800000000	COOKIE_NAME	cookie_value"></textarea>
+                            <small class="text-muted">Paste the contents of a Netscape format cookies file</small>
+                            <div class="mt-2">
+                                <button type="button" class="btn btn-sm btn-secondary" id="saveCookiesBtn"><i class="bi bi-save"></i> Save Pasted Cookies</button>
+                                <button type="button" class="btn btn-sm btn-danger" id="clearCookiesBtn"><i class="bi bi-trash"></i> Clear All Cookies</button>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-success"><i class="bi bi-save"></i> Save Configuration</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast for notifications -->
+    <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+        <div id="toast" class="toast align-items-center" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body" id="toastMessage"></div>
+                <button type="button" class="btn-close me-2 m-auto" data-bs-dismiss="toast"></button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
