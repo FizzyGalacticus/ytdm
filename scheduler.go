@@ -228,6 +228,12 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		return err
 	}
 
+	// Skip if already downloaded
+	if storage.IsVideoDownloaded(video.ID, info.ID) {
+		log.Printf("Video %s already downloaded, skipping", video.Title)
+		return nil
+	}
+
 	// Check if video is within retention period
 	retentionDays := video.RetentionDays
 	if retentionDays <= 0 {
@@ -248,7 +254,14 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	if err := downloader.DownloadVideo(video.URL, channelName); err != nil {
+		log.Printf("Failed to download video %s: %v", video.Title, err)
+		// Don't mark as downloaded - will retry on next interval
 		return err
+	}
+
+	// Mark as downloaded
+	if err := storage.MarkVideoAsDownloaded(video.ID, info.ID); err != nil {
+		log.Printf("Failed to mark video as downloaded: %v", err)
 	}
 
 	// Update last checked time

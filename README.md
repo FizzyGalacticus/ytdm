@@ -1,72 +1,42 @@
 # YouTube Media Downloader
 
-A Go-based service for automatically downloading and managing YouTube videos from channels and individual URLs.
+Automated YouTube video downloader with channel monitoring, retention management, and a web interface.
 
 ## Features
 
-- **Channel Monitoring**: Automatically download new videos from subscribed channels
-- **Per-Channel Retention**: Each channel can have its own video retention period
-- **Individual Video Tracking**: Monitor and download specific videos with custom retention
-- **Retention Management**: Automatically remove videos older than configured retention period
-- **REST API**: Full API for managing channels, videos, and configuration
-- **Web Interface**: Bootstrap 5-based UI for easy management
-- **Concurrent Downloads**: Configurable concurrent download limits
-- **Auto-Updates**: yt-dlp automatically updates itself
-- **Docker Support**: Runs as a containerized service
-- **Standard Library Only**: Uses only Go standard library (except yt-dlp subprocess)
+- Monitor YouTube channels and automatically download new videos
+- Per-channel and per-video retention policies with cutoff dates
+- Web UI for configuration and management
+- REST API for programmatic control
+- Cookie support for bypassing rate limits
+- Automatic yt-dlp updates
+- Docker support with multi-stage builds
+- Concurrent downloads with configurable limits
 
 ## Quick Start
 
-### Using Docker
+### Docker (Recommended)
 
-1. Build the Docker image:
 ```bash
-docker build -t media-downloader:slim .
+# Using docker-compose
+docker-compose up -d
+
+# Or manually
+docker build -t media-downloader .
+docker run -d -p 8080:8080 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/downloads:/app/downloads \
+  media-downloader
 ```
 
-2. Run the container:
+Access the web UI at `http://localhost:8080`
+
+### Local
+
+**Requirements:** Go 1.21+, Python 3, yt-dlp, ffmpeg (optional)
+
 ```bash
-docker run -d \
-  -p 8080:8080 \
-  -v $(pwd)/downloads:/downloads \
-  -v $(pwd)/data:/data \
-  --name media-downloader \
-  media-downloader:slim
-```
-
-3. Access the web interface at `http://localhost:8080`
-
-### Running Locally (Without Docker)
-
-**Prerequisites:**
-- Go 1.21 or later
-- Python 3 with pip
-- (Optional) ffmpeg for video processing
-
-**Installation:**
-
-1. Install yt-dlp:
-```bash
-pip3 install --user yt-dlp
-# or
-pip install yt-dlp
-```
-
-2. Install ffmpeg (optional but recommended):
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-
-# Arch Linux
-sudo pacman -S ffmpeg
-```
-
-3. Build and run:
-```bash
-# Using the convenience script
+# Quick start script
 ./run-local.sh
 
 # Or manually
@@ -74,30 +44,127 @@ go build -o media_downloader
 ./media_downloader
 ```
 
-4. Access at http://localhost:8080
-
-**Note:** The app will:
-- Create `./downloads` directory for videos
-- Create `./data` directory for configuration and state
-- Use default config on first run (editable via web UI)
-
-3. Run:
-```bash
-./media_downloader
-```
-
 ## Configuration
 
-The application can be configured via `config.json` or through the web interface:
+All configuration can be managed through the web UI or by editing `data/config.json`:
 
 ```json
 {
   "check_interval_seconds": 300,
-  "retention_days": 30,
-  "download_dir": "/downloads",
+  "retention_days": 7,
+  "download_dir": "../downloads",
   "file_name_pattern": "%(title)s-%(id)s.%(ext)s",
-  "api_port": 8080,
   "max_concurrent_downloads": 3,
+  "yt_dlp_update_interval_seconds": 86400,
+  "cookies_browser": "firefox",
+  "cookies_file": "data/cookies.txt"
+}
+```
+
+### Key Settings
+
+- **check_interval_seconds**: How often to check for new videos (default: 300)
+- **retention_days**: Default retention period in days (default: 7)
+- **max_concurrent_downloads**: Number of simultaneous downloads (default: 3)
+- **cookies_browser**: Extract cookies from browser (`firefox` or `chrome`)
+- **cookies_file**: Path to Netscape format cookies file
+
+### Per-Channel Settings
+
+Each channel can override the global retention with its own retention period and cutoff date:
+
+- **Retention Days**: Keep videos for N days (0 = use global setting)
+- **Cutoff Date**: Only download videos published on or after this date
+
+## Cookie Support
+
+YouTube may require authentication to avoid rate limiting. Two options:
+
+### 1. Browser Cookies (Automatic)
+Select browser in the Configuration tab. Requires the browser to be running and logged into YouTube.
+
+### 2. Paste Cookies (Manual)
+1. Export cookies using a browser extension (Cookie Editor, etc.)
+2. Paste Netscape format cookies in the Configuration tab
+3. Click "Save Pasted Cookies"
+
+Example format:
+```
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	1805237469	COOKIE_NAME	cookie_value
+```
+
+## API Endpoints
+
+### Channels
+- `GET /api/channels` - List all channels
+- `POST /api/channels` - Add a channel
+- `DELETE /api/channels/{id}` - Remove a channel
+
+### Videos
+- `GET /api/videos` - List all videos
+- `POST /api/videos` - Add a video
+- `DELETE /api/videos/{id}` - Remove a video
+
+### Configuration
+- `GET /api/config` - Get configuration
+- `PUT /api/config` - Update configuration
+
+### Cookies
+- `POST /api/cookies` - Save pasted cookies
+- `POST /api/cookies/clear` - Clear all cookies
+
+### Status
+- `GET /api/status` - Service status
+
+## Directory Structure
+
+```
+media_downloader/
+├── data/
+│   ├── config.json      # Application configuration
+│   ├── data.json        # Channel/video state
+│   └── cookies.txt      # YouTube cookies
+├── downloads/           # Downloaded videos (organized by channel)
+├── static/
+│   ├── index.html      # Web UI
+│   └── app.js          # UI JavaScript
+├── *.go                # Source files
+├── *_test.go           # Test files
+├── Dockerfile
+├── docker-compose.yml
+└── run-local.sh        # Local run script
+```
+
+## Testing
+
+```bash
+# Run all tests
+go test -v ./...
+
+# Run specific test suite
+go test -v -run TestStorage
+go test -v -run TestConfig
+go test -v -run TestVideoInfo
+```
+
+## Development
+
+Built with Go 1.21 using only the standard library (yt-dlp runs as subprocess).
+
+**Project structure:**
+- `main.go` - Entry point and lifecycle management
+- `config.go` - Configuration with thread-safe operations
+- `storage.go` - Persistent data management
+- `downloader.go` - yt-dlp wrapper
+- `scheduler.go` - Background task scheduling
+- `api.go` - REST API and web server
+- `updater.go` - yt-dlp auto-updater
+
+## License
+
+MIT
+
   "yt_dlp_path": "yt-dlp"
 }
 ```
