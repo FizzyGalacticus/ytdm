@@ -161,44 +161,6 @@ Built with Go 1.21 using only the standard library (yt-dlp runs as subprocess).
 - `api.go` - REST API and web server
 - `updater.go` - yt-dlp auto-updater
 
-## License
-
-MIT
-
-  "yt_dlp_path": "yt-dlp"
-}
-```
-
-### Configuration Options
-
-- `check_interval_seconds`: How often to check for new videos (default: 300)
-- `retention_days`: Default retention days for channels/videos if not specified (default: 30)
-- `download_dir`: Directory where videos are stored (default: /downloads)
-- `file_name_pattern`: yt-dlp filename pattern (default: %(title)s-%(id)s.%(ext)s)
-- `api_port`: Port for the API/web server (default: 8080)
-- `max_concurrent_downloads`: Maximum concurrent downloads (default: 3)
-- `yt_dlp_path`: Path to yt-dlp executable (default: yt-dlp)
-- `yt_dlp_update_interval_seconds`: How often to auto-update yt-dlp (default: 86400 = 24 hours, 0 = disabled)
-
-## Per-Channel/Video Retention
-
-Each channel and video can have its own retention period:
-- When adding a channel/video, optionally specify `retention_days`
-- If not specified, uses the global default from config
-- Videos older than the retention period are automatically deleted
-- Set to 0 to use the global default
-- Each channel manages its own retention independently
-
-## Channel Cutoff Date
-
-Channels support a **cutoff date** to ignore old videos:
-- Set a cutoff date when adding a channel (e.g., "2024-01-01")
-- The app will **never** download videos published before this date
-- Useful for subscribing to channels without downloading their entire back catalog
-- Example: Set cutoff to today's date to only get future videos
-- Displayed as a blue "From: DATE" badge in the web UI
-- Optional field - leave blank to download all videos (respecting retention)
-
 ## Auto-Update Feature
 
 **yt-dlp** automatically updates itself to the latest version:
@@ -319,4 +281,4 @@ When you press Ctrl+C or send a termination signal:
 
 ## License
 
-MIT License - See LICENSE file for details
+MIT License
