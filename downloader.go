@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var jitterRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+var jitterMu sync.Mutex
 
 // VideoInfo represents metadata about a video
 type VideoInfo struct {
@@ -36,23 +41,65 @@ func NewDownloader(config *Config) *Downloader {
 func (d *Downloader) buildYtDlpCommand(args ...string) *exec.Cmd {
 	cmdArgs := args
 
-	// Add user-agent and anti-throttling options
-	antiThrottle := []string{
+	// Add user-agent and base options
+	baseOptions := []string{
 		"--user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-		"--sleep-requests", "3",      // 3 seconds between requests
-		"--socket-timeout", "30",     // 30 second socket timeout
+		"--socket-timeout", "30", // 30 second socket timeout
 		"--extractor-args", "youtube:lang=en",
+		"--windows-filenames",
+		"--quiet",
 	}
-	cmdArgs = append(antiThrottle, cmdArgs...)
+
+	if d.config.YtDlp.RestrictFilenames {
+		baseOptions = append(baseOptions, "--restrict-filenames")
+	}
+
+	if d.config.YtDlp.CacheDir != "" {
+		baseOptions = append(baseOptions, "--cache-dir", d.config.YtDlp.CacheDir)
+	}
+
+	if d.config.YtDlp.DownloadThroughputLimit != "" {
+		baseOptions = append(baseOptions, "--limit-rate", d.config.YtDlp.DownloadThroughputLimit)
+	}
+
+	sleepInterval := d.config.GetExtractorSleepInterval()
+	if sleepInterval > 0 {
+		sleepSeconds := int(sleepInterval.Seconds())
+		jittered := addJitterSeconds(sleepSeconds, 0.5)
+		baseOptions = append(baseOptions,
+			"--sleep-requests", fmt.Sprintf("%d", jittered),
+			"--sleep-interval", fmt.Sprintf("%d", jittered),
+			"--sleep-subtitles", fmt.Sprintf("%d", jittered),
+		)
+	}
+
+	cmdArgs = append(baseOptions, cmdArgs...)
 
 	// Add cookies support if configured
-	if d.config.CookiesBrowser != "" {
-		cmdArgs = append([]string{"--cookies-from-browser", d.config.CookiesBrowser}, cmdArgs...)
-	} else if d.config.CookiesFile != "" {
-		cmdArgs = append([]string{"--cookies", d.config.CookiesFile}, cmdArgs...)
+	if d.config.YtDlp.CookiesBrowser != "" {
+		cmdArgs = append([]string{"--cookies-from-browser", d.config.YtDlp.CookiesBrowser}, cmdArgs...)
+	} else if d.config.YtDlp.CookiesFile != "" {
+		cmdArgs = append([]string{"--cookies", d.config.YtDlp.CookiesFile}, cmdArgs...)
 	}
 
-	return exec.Command(d.config.YtDlpPath, cmdArgs...)
+	return exec.Command(d.config.YtDlp.Path, cmdArgs...)
+}
+
+func addJitterSeconds(baseSeconds int, jitterPercent float64) int {
+	if baseSeconds <= 0 {
+		return 0
+	}
+
+	maxJitter := int(float64(baseSeconds) * jitterPercent)
+	if maxJitter <= 0 {
+		return baseSeconds
+	}
+
+	jitterMu.Lock()
+	jitter := jitterRand.Intn(maxJitter + 1)
+	jitterMu.Unlock()
+
+	return baseSeconds + jitter
 }
 
 // GetChannelVideos retrieves metadata for all videos from a channel
@@ -150,10 +197,19 @@ func (d *Downloader) DownloadVideo(videoURL, channelName string) error {
 
 	log.Printf("Downloading video: %s to %s", videoURL, channelDir)
 
-	// Build yt-dlp command
+	// First, fetch metadata with yt-dlp
+	metadata, err := d.fetchVideoMetadata(videoURL)
+	if err != nil {
+		log.Printf("Warning: could not fetch metadata for %s: %v", videoURL, err)
+		metadata = nil // Continue with download even if metadata fails
+	}
+
+	// Build yt-dlp command for download
 	cmd := d.buildYtDlpCommand(
 		"-o", filepath.Join(channelDir, d.config.FileNamePattern),
 		"--no-playlist",
+		"-f", "best[ext=mp4]/best",  // Prefer mp4 format, fallback to best available
+		"--match-filters", "!is_live & duration>60",  // Exclude live streams and videos shorter than 60 seconds (shorts)
 		videoURL,
 	)
 
@@ -165,6 +221,14 @@ func (d *Downloader) DownloadVideo(videoURL, channelName string) error {
 	}
 
 	log.Printf("Successfully downloaded video: %s", videoURL)
+
+	// Generate NFO file if metadata was available
+	if metadata != nil {
+		if err := d.generateNFOFile(channelDir, metadata); err != nil {
+			log.Printf("Warning: failed to generate NFO file: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -245,4 +309,103 @@ func sanitizeFilename(name string) string {
 		result = strings.ReplaceAll(result, char, "_")
 	}
 	return result
+}
+
+// VideoMetadata holds metadata about a video for NFO generation
+type VideoMetadata struct {
+	ID          string
+	Title       string
+	Description string
+	Uploader    string
+	UploadDate  string // YYYY-MM-DD
+	Duration    int    // seconds
+	Thumbnail   string
+}
+
+// fetchVideoMetadata fetches video metadata using yt-dlp
+func (d *Downloader) fetchVideoMetadata(videoURL string) (*VideoMetadata, error) {
+	cmd := d.buildYtDlpCommand(
+		"--dump-json",
+		"--no-warnings",
+		"--skip-download",
+		videoURL,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch metadata: %v", err)
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(output, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse metadata JSON: %v", err)
+	}
+
+	metadata := &VideoMetadata{
+		ID: fmt.Sprintf("%v", data["id"]),
+		Title: fmt.Sprintf("%v", data["title"]),
+		Description: fmt.Sprintf("%v", data["description"]),
+		Uploader: fmt.Sprintf("%v", data["uploader"]),
+	}
+
+	if uploadDate, ok := data["upload_date"].(string); ok && len(uploadDate) >= 8 {
+		// Convert YYYYMMDD to YYYY-MM-DD
+		metadata.UploadDate = uploadDate[:4] + "-" + uploadDate[4:6] + "-" + uploadDate[6:8]
+	}
+
+	if duration, ok := data["duration"].(float64); ok {
+		metadata.Duration = int(duration)
+	}
+
+	if thumbnail, ok := data["thumbnail"].(string); ok {
+		metadata.Thumbnail = thumbnail
+	}
+
+	return metadata, nil
+}
+
+// generateNFOFile creates an NFO XML file for a video
+func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata) error {
+	// Find the video file matching this metadata ID
+	files, err := filepath.Glob(filepath.Join(channelDir, "*"+metadata.ID+"*"))
+	if err != nil || len(files) == 0 {
+		return fmt.Errorf("could not find downloaded video file for %s", metadata.ID)
+	}
+
+	videoFile := files[0]
+	nfoPath := strings.TrimSuffix(videoFile, filepath.Ext(videoFile)) + ".nfo"
+
+	// Create NFO XML content
+	nfoContent := `<?xml version="1.0" encoding="UTF-8"?>
+<movie>
+  <title>` + escapeXML(metadata.Title) + `</title>
+  <plot>` + escapeXML(metadata.Description) + `</plot>
+  <director>` + escapeXML(metadata.Uploader) + `</director>
+  <actor>
+    <name>` + escapeXML(metadata.Uploader) + `</name>
+  </actor>
+  <credits>` + escapeXML(metadata.Uploader) + `</credits>
+  <year>` + strings.Split(metadata.UploadDate, "-")[0] + `</year>
+  <premiered>` + metadata.UploadDate + `</premiered>
+  <aired>` + metadata.UploadDate + `</aired>
+  <runtime>` + fmt.Sprintf("%d", metadata.Duration/60) + `</runtime>
+  <uniqueid type="youtube">` + metadata.ID + `</uniqueid>
+</movie>`
+
+	if err := os.WriteFile(nfoPath, []byte(nfoContent), 0644); err != nil {
+		return fmt.Errorf("failed to write NFO file: %v", err)
+	}
+
+	log.Printf("Generated NFO file: %s", nfoPath)
+	return nil
+}
+
+// escapeXML escapes special XML characters
+func escapeXML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&apos;")
+	return s
 }

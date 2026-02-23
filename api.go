@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -234,14 +236,22 @@ func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 // getConfig returns the current configuration
 func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 	configData := map[string]interface{}{
-		"check_interval_seconds":          int(api.config.CheckInterval.Seconds()),
-		"retention_days":                  api.config.RetentionDays,
-		"download_dir":                    api.config.DownloadDir,
-		"file_name_pattern":               api.config.FileNamePattern,
-		"api_port":                        api.config.APIPort,
-		"max_concurrent_downloads":        api.config.MaxConcurrent,
-		"yt_dlp_path":                     api.config.YtDlpPath,
-		"yt_dlp_update_interval_seconds":  int(api.config.YtDlpUpdateInterval.Seconds()),
+		"check_interval_seconds":   api.config.CheckInterval,
+		"retention_days":           api.config.RetentionDays,
+		"download_dir":             api.config.DownloadDir,
+		"file_name_pattern":        api.config.FileNamePattern,
+		"api_port":                 api.config.APIPort,
+		"max_concurrent_downloads": api.config.MaxConcurrent,
+		"yt_dlp": map[string]interface{}{
+			"path":                             api.config.YtDlp.Path,
+			"update_interval_seconds":          api.config.YtDlp.UpdateInterval,
+			"cookies_browser":                  api.config.YtDlp.CookiesBrowser,
+			"cookies_file":                     api.config.YtDlp.CookiesFile,
+			"extractor_sleep_interval_seconds": api.config.YtDlp.ExtractorSleepInterval,
+			"download_throughput_limit":        api.config.YtDlp.DownloadThroughputLimit,
+			"restrict_filenames":               api.config.YtDlp.RestrictFilenames,
+			"cache_dir":                        api.config.YtDlp.CacheDir,
+		},
 	}
 	api.sendSuccess(w, configData)
 }
@@ -255,8 +265,8 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update config fields
-	if val, ok := updates["check_interval_seconds"].(float64); ok {
-		api.config.CheckInterval = time.Duration(val) * time.Second
+	if val, ok := updates["check_interval_seconds"].(string); ok {
+		api.config.CheckInterval = val
 	}
 	if val, ok := updates["retention_days"].(float64); ok {
 		api.config.RetentionDays = int(val)
@@ -270,14 +280,31 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if val, ok := updates["max_concurrent_downloads"].(float64); ok {
 		api.config.MaxConcurrent = int(val)
 	}
-	if val, ok := updates["yt_dlp_update_interval_seconds"].(float64); ok {
-		api.config.YtDlpUpdateInterval = time.Duration(val) * time.Second
-	}
-	if val, ok := updates["cookies_browser"].(string); ok {
-		api.config.CookiesBrowser = val
-	}
-	if val, ok := updates["cookies_file"].(string); ok {
-		api.config.CookiesFile = val
+	if ytDlpRaw, ok := updates["yt_dlp"].(map[string]interface{}); ok {
+		if val, ok := ytDlpRaw["path"].(string); ok {
+			api.config.YtDlp.Path = val
+		}
+		if val, ok := ytDlpRaw["update_interval_seconds"].(string); ok {
+			api.config.YtDlp.UpdateInterval = val
+		}
+		if val, ok := ytDlpRaw["cookies_browser"].(string); ok {
+			api.config.YtDlp.CookiesBrowser = val
+		}
+		if val, ok := ytDlpRaw["cookies_file"].(string); ok {
+			api.config.YtDlp.CookiesFile = val
+		}
+		if val, ok := ytDlpRaw["extractor_sleep_interval_seconds"].(string); ok {
+			api.config.YtDlp.ExtractorSleepInterval = val
+		}
+		if val, ok := ytDlpRaw["download_throughput_limit"].(string); ok {
+			api.config.YtDlp.DownloadThroughputLimit = val
+		}
+		if val, ok := ytDlpRaw["restrict_filenames"].(bool); ok {
+			api.config.YtDlp.RestrictFilenames = val
+		}
+		if val, ok := ytDlpRaw["cache_dir"].(string); ok {
+			api.config.YtDlp.CacheDir = val
+		}
 	}
 
 	// Save config
@@ -321,8 +348,8 @@ func (api *APIServer) handleCookies(w http.ResponseWriter, r *http.Request) {
 
 	// Update config to use the cookies file
 	api.config.Lock()
-	api.config.CookiesBrowser = ""
-	api.config.CookiesFile = "data/cookies.txt"
+	api.config.YtDlp.CookiesBrowser = ""
+	api.config.YtDlp.CookiesFile = "data/cookies.txt"
 	api.config.Unlock()
 
 	// Save config to disk
@@ -349,8 +376,8 @@ func (api *APIServer) handleClearCookies(w http.ResponseWriter, r *http.Request)
 
 	// Update config to disable cookies
 	api.config.Lock()
-	api.config.CookiesBrowser = ""
-	api.config.CookiesFile = ""
+	api.config.YtDlp.CookiesBrowser = ""
+	api.config.YtDlp.CookiesFile = ""
 	api.config.Unlock()
 
 	// Save config to disk
@@ -372,8 +399,32 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"channels_count": len(api.storage.GetChannels()),
 		"videos_count":   len(api.storage.GetVideos()),
 		"uptime":         time.Now().Format(time.RFC3339),
+		"yt_dlp_version": getYtDlpVersion(api.config.YtDlp.Path),
 	}
 	api.sendSuccess(w, status)
+}
+
+func getYtDlpVersion(ytDlpPath string) string {
+	if ytDlpPath == "" {
+		return "unknown"
+	}
+
+	cmd := exec.Command(ytDlpPath, "--version")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		log.Printf("Failed to get yt-dlp version: %v, stderr: %s", err, stderr.String())
+		return "unknown"
+	}
+
+	version := strings.TrimSpace(stdout.String())
+	if version == "" {
+		return "unknown"
+	}
+
+	return version
 }
 
 // sendSuccess sends a successful JSON response

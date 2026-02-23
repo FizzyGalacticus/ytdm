@@ -128,9 +128,19 @@
             <div class="card-body">
                 <form id="configForm">
                     <div class="row g-3">
-                        <div class="col-md-6">
-                            <label for="checkInterval" class="form-label">Check Interval (seconds)</label>
-                            <input type="number" class="form-control" id="checkInterval" min="60" required>
+                        <div class="col-12">
+                            <label class="form-label"><strong>Check Interval</strong></label>
+                            <div class="row g-2">
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="checkIntervalH" min="0" placeholder="Hours" value="0">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="checkIntervalM" min="0" max="59" placeholder="Minutes" value="5">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="checkIntervalS" min="0" max="59" placeholder="Seconds" value="0">
+                                </div>
+                            </div>
                         </div>
                         <div class="col-md-6">
                             <label for="retentionDays" class="form-label">Retention Days</label>
@@ -144,10 +154,56 @@
                             <label for="maxConcurrent" class="form-label">Max Concurrent Downloads</label>
                             <input type="number" class="form-control" id="maxConcurrent" min="1" max="10" required>
                         </div>
+                        <div class="col-12">
+                            <label class="form-label"><strong>yt-dlp Update Interval</strong></label>
+                            <div class="row g-2">
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalH" min="0" placeholder="Hours" value="24">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalM" min="0" max="59" placeholder="Minutes" value="0">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalS" min="0" max="59" placeholder="Seconds" value="0">
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">Set to 0 to disable auto-updates</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label"><strong>Extractor Sleep Interval</strong></label>
+                            <div class="row g-2">
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="extractorSleepIntervalH" min="0" placeholder="Hours" value="0">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="extractorSleepIntervalM" min="0" max="59" placeholder="Minutes" value="0">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control" id="extractorSleepIntervalS" min="0" max="59" placeholder="Seconds" value="0">
+                                </div>
+                                <div class="col-md-4">
+                                    <small class="text-muted">Adds jitter to reduce rate limiting (0 to disable)</small>
+                                </div>
+                            </div>
+                        </div>
                         <div class="col-md-6">
-                            <label for="ytDlpUpdateInterval" class="form-label">yt-dlp Update Interval (seconds)</label>
-                            <input type="number" class="form-control" id="ytDlpUpdateInterval" min="0" required>
-                            <small class="text-muted">Set to 0 to disable auto-updates</small>
+                            <label for="downloadThroughputLimit" class="form-label">Download Throughput Limit</label>
+                            <input type="text" class="form-control" id="downloadThroughputLimit" placeholder="e.g. 100K, 4.2M">
+                            <small class="text-muted">Leave blank for no limit</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="ytDlpCacheDir" class="form-label">yt-dlp Cache Directory</label>
+                            <input type="text" class="form-control" id="ytDlpCacheDir" placeholder="data/yt-dlp-cache">
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="restrictFilenames">
+                                <label class="form-check-label" for="restrictFilenames">
+                                    Restrict filenames (yt-dlp --restrict-filenames)
+                                </label>
+                            </div>
                         </div>
                         <div class="col-12">
                             <label for="fileNamePattern" class="form-label">File Name Pattern</label>

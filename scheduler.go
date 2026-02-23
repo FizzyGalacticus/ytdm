@@ -149,14 +149,9 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	log.Printf("Processing channel: %s (retention: %d days)", channel.Name, channel.RetentionDays)
 
 	// Determine the time window to check for videos
-	retentionDays := channel.RetentionDays
-	if retentionDays <= 0 {
-		retentionDays = config.RetentionDays
-	}
-	since := time.Now().AddDate(0, 0, -retentionDays)
-
-	// Apply cutoff date if set (include videos from cutoff date and later)
-	if !channel.CutoffDate.IsZero() && since.Before(channel.CutoffDate) {
+	// Retention is based on download date, so don't filter by publish date unless a cutoff is set.
+	var since time.Time
+	if !channel.CutoffDate.IsZero() {
 		log.Printf("Applying cutoff date for channel %s: %s (inclusive)", channel.Name, channel.CutoffDate.Format("2006-01-02"))
 		// Subtract one day to include videos published on the cutoff date
 		since = channel.CutoffDate.AddDate(0, 0, -1)
@@ -234,18 +229,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		return nil
 	}
 
-	// Check if video is within retention period
-	retentionDays := video.RetentionDays
-	if retentionDays <= 0 {
-		retentionDays = config.RetentionDays
-	}
-	if retentionDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -retentionDays)
-		if info.PublishTime.Before(cutoff) {
-			log.Printf("Video %s is older than retention period, skipping", video.Title)
-			return nil
-		}
-	}
+	// Retention is based on download date, so don't skip based on publish date
 
 	// Download the video
 	channelName := info.Uploader

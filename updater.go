@@ -27,7 +27,7 @@ func RunUpdater(ctx context.Context, config *Config) {
 
 	// Run initial update after a short delay
 	time.Sleep(10 * time.Second)
-	updateYtDlp(config.YtDlpPath)
+	updateYtDlp(config.YtDlp.Path)
 
 	for {
 		select {
@@ -50,7 +50,7 @@ func RunUpdater(ctx context.Context, config *Config) {
 				lastInterval = currentInterval
 			}
 
-			updateYtDlp(config.YtDlpPath)
+			updateYtDlp(config.YtDlp.Path)
 		}
 	}
 }

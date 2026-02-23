@@ -7,46 +7,47 @@ import (
 	"time"
 )
 
+// YtDlpConfig holds yt-dlp specific configuration
+type YtDlpConfig struct {
+	Path                    string `json:"path"`
+	UpdateInterval          string `json:"update_interval_seconds"` // Go duration string (e.g., "24h0m0s")
+	CookiesBrowser          string `json:"cookies_browser"`         // firefox, chrome, or empty to disable
+	CookiesFile             string `json:"cookies_file"`            // path to cookies.txt file
+	ExtractorSleepInterval  string `json:"extractor_sleep_interval_seconds"` // Go duration string
+	DownloadThroughputLimit string `json:"download_throughput_limit"`
+	RestrictFilenames       bool   `json:"restrict_filenames"`
+	CacheDir                string `json:"cache_dir"`
+}
+
 // Config holds the application configuration
 type Config struct {
 	sync.RWMutex
-	CheckInterval       time.Duration `json:"check_interval_seconds"`
-	RetentionDays       int           `json:"retention_days"`
-	DownloadDir         string        `json:"download_dir"`
-	FileNamePattern     string        `json:"file_name_pattern"`
-	APIPort             int           `json:"api_port"`
-	MaxConcurrent       int           `json:"max_concurrent_downloads"`
-	YtDlpPath           string        `json:"yt_dlp_path"`
-	YtDlpUpdateInterval time.Duration `json:"yt_dlp_update_interval_seconds"`
-	CookiesBrowser      string        `json:"cookies_browser"` // firefox, chrome, or empty to disable
-	CookiesFile         string        `json:"cookies_file"`   // path to cookies.txt file
-}
-
-// configJSON is used for JSON marshaling with seconds instead of duration
-type configJSON struct {
-	CheckIntervalSeconds       int    `json:"check_interval_seconds"`
-	RetentionDays              int    `json:"retention_days"`
-	DownloadDir                string `json:"download_dir"`
-	FileNamePattern            string `json:"file_name_pattern"`
-	APIPort                    int    `json:"api_port"`
-	MaxConcurrent              int    `json:"max_concurrent_downloads"`
-	YtDlpPath                  string `json:"yt_dlp_path"`
-	YtDlpUpdateIntervalSeconds int    `json:"yt_dlp_update_interval_seconds"`
-	CookiesBrowser             string `json:"cookies_browser"`
-	CookiesFile                string `json:"cookies_file"`
+	CheckInterval   string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
+	RetentionDays   int         `json:"retention_days"`
+	DownloadDir     string      `json:"download_dir"`
+	FileNamePattern string      `json:"file_name_pattern"`
+	APIPort         int         `json:"api_port"`
+	MaxConcurrent   int         `json:"max_concurrent_downloads"`
+	YtDlp           YtDlpConfig `json:"yt_dlp"`
 }
 
 // DefaultConfig returns a Config with default values
 func DefaultConfig() *Config {
 	return &Config{
-		CheckInterval:       5 * time.Minute,
-		RetentionDays:       7,
-		DownloadDir:         "/downloads",
-		FileNamePattern:     "%(title)s-%(id)s.%(ext)s",
-		APIPort:             8080,
-		MaxConcurrent:       3,
-		YtDlpPath:           "yt-dlp",
-		YtDlpUpdateInterval: 24 * time.Hour,
+		CheckInterval:   "5m0s",
+		RetentionDays:   7,
+		DownloadDir:     "/downloads",
+		FileNamePattern: "%(title)s-%(id)s.%(ext)s",
+		APIPort:         8080,
+		MaxConcurrent:   3,
+		YtDlp: YtDlpConfig{
+			Path:                    "yt-dlp",
+			UpdateInterval:          "24h0m0s",
+			ExtractorSleepInterval:  "0s",
+			DownloadThroughputLimit: "",
+			RestrictFilenames:       false,
+			CacheDir:                "data/yt-dlp-cache",
+		},
 	}
 }
 
@@ -57,41 +58,19 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 
-	var cj configJSON
-	if err := json.Unmarshal(data, &cj); err != nil {
+	var config Config
+	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
 
-	return &Config{
-		CheckInterval:       time.Duration(cj.CheckIntervalSeconds) * time.Second,
-		RetentionDays:       cj.RetentionDays,
-		DownloadDir:         cj.DownloadDir,
-		FileNamePattern:     cj.FileNamePattern,
-		APIPort:             cj.APIPort,
-		MaxConcurrent:       cj.MaxConcurrent,
-		YtDlpPath:           cj.YtDlpPath,
-		YtDlpUpdateInterval: time.Duration(cj.YtDlpUpdateIntervalSeconds) * time.Second,
-		CookiesBrowser:      cj.CookiesBrowser,
-		CookiesFile:         cj.CookiesFile,
-	}, nil
+	applyConfigDefaults(&config)
+
+	return &config, nil
 }
 
 // Save saves the configuration to a JSON file
 func (c *Config) Save(path string) error {
-	cj := configJSON{
-		CheckIntervalSeconds:       int(c.CheckInterval.Seconds()),
-		RetentionDays:              c.RetentionDays,
-		DownloadDir:                c.DownloadDir,
-		FileNamePattern:            c.FileNamePattern,
-		APIPort:                    c.APIPort,
-		MaxConcurrent:              c.MaxConcurrent,
-		YtDlpPath:                  c.YtDlpPath,
-		YtDlpUpdateIntervalSeconds: int(c.YtDlpUpdateInterval.Seconds()),
-		CookiesBrowser:             c.CookiesBrowser,
-		CookiesFile:                c.CookiesFile,
-	}
-
-	data, err := json.MarshalIndent(cj, "", "  ")
+	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -99,7 +78,7 @@ func (c *Config) Save(path string) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// ReloadConfig reloads configuration from disk into the in-memory config
+// ReloadFromDisk reloads configuration from disk into the in-memory config
 func (c *Config) ReloadFromDisk(path string) error {
 	c.Lock()
 	defer c.Unlock()
@@ -109,36 +88,53 @@ func (c *Config) ReloadFromDisk(path string) error {
 		return err
 	}
 
-	var cj configJSON
-	if err := json.Unmarshal(data, &cj); err != nil {
+	if err := json.Unmarshal(data, c); err != nil {
 		return err
 	}
 
-	// Update config fields with lock held
-	c.CheckInterval = time.Duration(cj.CheckIntervalSeconds) * time.Second
-	c.RetentionDays = cj.RetentionDays
-	c.DownloadDir = cj.DownloadDir
-	c.FileNamePattern = cj.FileNamePattern
-	c.APIPort = cj.APIPort
-	c.MaxConcurrent = cj.MaxConcurrent
-	c.YtDlpPath = cj.YtDlpPath
-	c.YtDlpUpdateInterval = time.Duration(cj.YtDlpUpdateIntervalSeconds) * time.Second
-	c.CookiesBrowser = cj.CookiesBrowser
-	c.CookiesFile = cj.CookiesFile
+	applyConfigDefaults(c)
 
 	return nil
 }
 
-// GetCheckInterval returns the current check interval with locking
+func applyConfigDefaults(c *Config) {
+	if c.YtDlp.Path == "" {
+		c.YtDlp.Path = "yt-dlp"
+	}
+	if c.YtDlp.CacheDir == "" {
+		c.YtDlp.CacheDir = "data/yt-dlp-cache"
+	}
+	if c.CheckInterval == "" {
+		c.CheckInterval = "5m0s"
+	}
+	if c.YtDlp.UpdateInterval == "" {
+		c.YtDlp.UpdateInterval = "24h0m0s"
+	}
+	if c.YtDlp.ExtractorSleepInterval == "" {
+		c.YtDlp.ExtractorSleepInterval = "0s"
+	}
+}
+
+// GetCheckInterval returns the current check interval as time.Duration with locking
 func (c *Config) GetCheckInterval() time.Duration {
 	c.RLock()
 	defer c.RUnlock()
-	return c.CheckInterval
+	dur, _ := time.ParseDuration(c.CheckInterval)
+	return dur
 }
 
-// GetUpdateInterval returns the current yt-dlp update interval with locking
+// GetUpdateInterval returns the current yt-dlp update interval as time.Duration with locking
 func (c *Config) GetUpdateInterval() time.Duration {
 	c.RLock()
 	defer c.RUnlock()
-	return c.YtDlpUpdateInterval
+	dur, _ := time.ParseDuration(c.YtDlp.UpdateInterval)
+	return dur
+}
+
+// GetExtractorSleepInterval returns the extractor sleep interval as time.Duration with locking
+func (c *Config) GetExtractorSleepInterval() time.Duration {
+	c.RLock()
+	defer c.RUnlock()
+	dur, _ := time.ParseDuration(c.YtDlp.ExtractorSleepInterval)
+	return dur
 }
