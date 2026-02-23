@@ -1,3 +1,39 @@
+// Helper function to convert duration string to hours/minutes/seconds
+function durationToHMS(durationStr) {
+    const match = durationStr.match(/(\d+h)?(\d+m)?(\d+(?:\.\d+)?s)?/);
+    let hours = 0, minutes = 0, seconds = 0;
+    
+    if (match) {
+        if (match[1]) hours = parseInt(match[1]);
+        if (match[2]) minutes = parseInt(match[2]);
+        if (match[3]) seconds = parseInt(parseFloat(match[3]));
+    }
+    
+    return { hours, minutes, seconds };
+}
+
+// Helper function to convert hours/minutes/seconds to duration string
+function hmsToGoDuration(h, m, s) {
+    h = parseInt(h) || 0;
+    m = parseInt(m) || 0;
+    s = parseInt(s) || 0;
+    
+    // Convert to total seconds, then format as Go duration string
+    const totalSeconds = h * 3600 + m * 60 + s;
+    if (totalSeconds === 0) return "0s";
+    
+    let result = "";
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    
+    if (hours > 0) result += `${hours}h`;
+    if (minutes > 0) result += `${minutes}m`;
+    if (secs > 0) result += `${secs}s`;
+    
+    return result || "0s";
+}
+
 // API base URL
 const API_BASE = '/api';
 
@@ -24,10 +60,12 @@ async function loadStatus() {
         const response = await fetch(`${API_BASE}/status`);
         const data = await response.json();
         if (data.success) {
+            const versionText = data.data.yt_dlp_version ? data.data.yt_dlp_version : 'unknown';
             document.getElementById('status').innerHTML = `
                 <span class="badge bg-success">Running</span>
                 <span class="ms-3"><strong>Channels:</strong> ${data.data.channels_count}</span>
                 <span class="ms-3"><strong>Videos:</strong> ${data.data.videos_count}</span>
+                <span class="ms-3"><strong>yt-dlp:</strong> ${versionText}</span>
             `;
         }
     } catch (error) {
@@ -152,14 +190,36 @@ async function loadConfig() {
         const data = await response.json();
         if (data.success) {
             const config = data.data;
-            document.getElementById('checkInterval').value = config.check_interval_seconds;
+            
+            // Load check interval
+            const checkInterval = durationToHMS(config.check_interval_seconds);
+            document.getElementById('checkIntervalH').value = checkInterval.hours;
+            document.getElementById('checkIntervalM').value = checkInterval.minutes;
+            document.getElementById('checkIntervalS').value = checkInterval.seconds;
+            
             document.getElementById('retentionDays').value = config.retention_days;
             document.getElementById('downloadDir').value = config.download_dir;
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
-            document.getElementById('ytDlpUpdateInterval').value = config.yt_dlp_update_interval_seconds;
-            document.getElementById('cookiesBrowser').value = config.cookies_browser || '';
-            // cookiesFile is set by backend, not shown in UI
+            
+            const ytDlp = config.yt_dlp || {};
+            
+            // Load update interval
+            const updateInterval = durationToHMS(ytDlp.update_interval_seconds || "24h0m0s");
+            document.getElementById('ytDlpUpdateIntervalH').value = updateInterval.hours;
+            document.getElementById('ytDlpUpdateIntervalM').value = updateInterval.minutes;
+            document.getElementById('ytDlpUpdateIntervalS').value = updateInterval.seconds;
+            
+            // Load extractor sleep interval
+            const sleepInterval = durationToHMS(ytDlp.extractor_sleep_interval_seconds || "0s");
+            document.getElementById('extractorSleepIntervalH').value = sleepInterval.hours;
+            document.getElementById('extractorSleepIntervalM').value = sleepInterval.minutes;
+            document.getElementById('extractorSleepIntervalS').value = sleepInterval.seconds;
+            
+            document.getElementById('downloadThroughputLimit').value = ytDlp.download_throughput_limit || '';
+            document.getElementById('ytDlpCacheDir').value = ytDlp.cache_dir || '';
+            document.getElementById('restrictFilenames').checked = !!ytDlp.restrict_filenames;
+            document.getElementById('cookiesBrowser').value = ytDlp.cookies_browser || '';
         }
     } catch (error) {
         showToast('Failed to load configuration', true);
@@ -179,7 +239,7 @@ document.getElementById('saveCookiesBtn').addEventListener('click', async () => 
     try {
         const response = await fetch(`${API_BASE}/config`);
         const data = await response.json();
-        if (data.data && data.data.cookies_file) {
+        if (data.data && data.data.yt_dlp && data.data.yt_dlp.cookies_file) {
             confirmMessage = 'This will overwrite your existing cookies. Continue?';
         }
     } catch (e) {
@@ -334,15 +394,39 @@ async function removeVideo(id) {
 // Update config
 document.getElementById('configForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    
+    // Convert HMS to Go duration strings
+    const checkIntervalStr = hmsToGoDuration(
+        document.getElementById('checkIntervalH').value,
+        document.getElementById('checkIntervalM').value,
+        document.getElementById('checkIntervalS').value
+    );
+    const updateIntervalStr = hmsToGoDuration(
+        document.getElementById('ytDlpUpdateIntervalH').value,
+        document.getElementById('ytDlpUpdateIntervalM').value,
+        document.getElementById('ytDlpUpdateIntervalS').value
+    );
+    const sleepIntervalStr = hmsToGoDuration(
+        document.getElementById('extractorSleepIntervalH').value,
+        document.getElementById('extractorSleepIntervalM').value,
+        document.getElementById('extractorSleepIntervalS').value
+    );
+    
     const config = {
-        check_interval_seconds: parseInt(document.getElementById('checkInterval').value),
+        check_interval_seconds: checkIntervalStr,
         retention_days: parseInt(document.getElementById('retentionDays').value),
         download_dir: document.getElementById('downloadDir').value,
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),
-        yt_dlp_update_interval_seconds: parseInt(document.getElementById('ytDlpUpdateInterval').value),
-        cookies_browser: document.getElementById('cookiesBrowser').value,
-        cookies_file: ""  // Set by cookie paste endpoint
+        yt_dlp: {
+            update_interval_seconds: updateIntervalStr,
+            extractor_sleep_interval_seconds: sleepIntervalStr,
+            download_throughput_limit: document.getElementById('downloadThroughputLimit').value.trim(),
+            restrict_filenames: document.getElementById('restrictFilenames').checked,
+            cache_dir: document.getElementById('ytDlpCacheDir').value.trim(),
+            cookies_browser: document.getElementById('cookiesBrowser').value,
+            cookies_file: "" // Set by cookie paste endpoint
+        }
     };
 
     try {

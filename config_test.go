@@ -10,8 +10,8 @@ import (
 func TestConfigDefaults(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.CheckInterval != 5*time.Minute {
-		t.Errorf("Expected default check interval 5m, got %v", config.CheckInterval)
+	if config.CheckInterval != "5m0s" {
+		t.Errorf("Expected default check interval '5m0s', got %v", config.CheckInterval)
 	}
 
 	if config.RetentionDays != 7 {
@@ -22,8 +22,24 @@ func TestConfigDefaults(t *testing.T) {
 		t.Errorf("Expected default max concurrent 3, got %d", config.MaxConcurrent)
 	}
 
-	if config.YtDlpUpdateInterval != 24*time.Hour {
-		t.Errorf("Expected default update interval 24h, got %v", config.YtDlpUpdateInterval)
+	if config.YtDlp.UpdateInterval != "24h0m0s" {
+		t.Errorf("Expected default update interval '24h0m0s', got %v", config.YtDlp.UpdateInterval)
+	}
+
+	if config.YtDlp.ExtractorSleepInterval != "0s" {
+		t.Errorf("Expected default extractor sleep interval '0s', got %v", config.YtDlp.ExtractorSleepInterval)
+	}
+
+	if config.YtDlp.DownloadThroughputLimit != "" {
+		t.Errorf("Expected default download throughput limit empty, got '%s'", config.YtDlp.DownloadThroughputLimit)
+	}
+
+	if config.YtDlp.RestrictFilenames {
+		t.Errorf("Expected default restrict filenames false")
+	}
+
+	if config.YtDlp.CacheDir == "" {
+		t.Errorf("Expected default yt-dlp cache dir to be set")
 	}
 }
 
@@ -34,7 +50,11 @@ func TestConfigLoadSave(t *testing.T) {
 	config := DefaultConfig()
 	config.RetentionDays = 30
 	config.MaxConcurrent = 5
-	config.CookiesFile = "test_cookies.txt"
+	config.YtDlp.CookiesFile = "test_cookies.txt"
+	config.YtDlp.ExtractorSleepInterval = "5s"
+	config.YtDlp.DownloadThroughputLimit = "100K"
+	config.YtDlp.RestrictFilenames = true
+	config.YtDlp.CacheDir = "data/cache"
 
 	// Save to file
 	if err := config.Save(tmpFile); err != nil {
@@ -56,8 +76,24 @@ func TestConfigLoadSave(t *testing.T) {
 		t.Errorf("Expected max concurrent 5, got %d", loadedConfig.MaxConcurrent)
 	}
 
-	if loadedConfig.CookiesFile != "test_cookies.txt" {
-		t.Errorf("Expected cookies file 'test_cookies.txt', got '%s'", loadedConfig.CookiesFile)
+	if loadedConfig.YtDlp.CookiesFile != "test_cookies.txt" {
+		t.Errorf("Expected cookies file 'test_cookies.txt', got '%s'", loadedConfig.YtDlp.CookiesFile)
+	}
+
+	if loadedConfig.YtDlp.ExtractorSleepInterval != "5s" {
+		t.Errorf("Expected extractor sleep interval '5s', got %v", loadedConfig.YtDlp.ExtractorSleepInterval)
+	}
+
+	if loadedConfig.YtDlp.DownloadThroughputLimit != "100K" {
+		t.Errorf("Expected download throughput limit '100K', got '%s'", loadedConfig.YtDlp.DownloadThroughputLimit)
+	}
+
+	if !loadedConfig.YtDlp.RestrictFilenames {
+		t.Errorf("Expected restrict filenames true")
+	}
+
+	if loadedConfig.YtDlp.CacheDir != "data/cache" {
+		t.Errorf("Expected yt-dlp cache dir 'data/cache', got '%s'", loadedConfig.YtDlp.CacheDir)
 	}
 
 	// Cleanup
@@ -137,8 +173,8 @@ func TestConfigThreadSafety(t *testing.T) {
 
 func TestConfigGetters(t *testing.T) {
 	config := DefaultConfig()
-	config.CheckInterval = 10 * time.Minute
-	config.YtDlpUpdateInterval = 2 * time.Hour
+	config.CheckInterval = "10m0s"
+	config.YtDlp.UpdateInterval = "2h0m0s"
 
 	if config.GetCheckInterval() != 10*time.Minute {
 		t.Errorf("Expected check interval 10m, got %v", config.GetCheckInterval())
@@ -161,8 +197,8 @@ func TestConfigCookieSettings(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_config.json")
 
 	config := DefaultConfig()
-	config.CookiesBrowser = "firefox"
-	config.CookiesFile = ""
+	config.YtDlp.CookiesBrowser = "firefox"
+	config.YtDlp.CookiesFile = ""
 
 	config.Save(tmpFile)
 
@@ -171,13 +207,13 @@ func TestConfigCookieSettings(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if loadedConfig.CookiesBrowser != "firefox" {
-		t.Errorf("Expected cookies browser 'firefox', got '%s'", loadedConfig.CookiesBrowser)
+	if loadedConfig.YtDlp.CookiesBrowser != "firefox" {
+		t.Errorf("Expected cookies browser 'firefox', got '%s'", loadedConfig.YtDlp.CookiesBrowser)
 	}
 
 	// Test file-based cookies
-	config.CookiesBrowser = ""
-	config.CookiesFile = "data/cookies.txt"
+	config.YtDlp.CookiesBrowser = ""
+	config.YtDlp.CookiesFile = "data/cookies.txt"
 	config.Save(tmpFile)
 
 	loadedConfig2, err := LoadConfig(tmpFile)
@@ -185,8 +221,8 @@ func TestConfigCookieSettings(t *testing.T) {
 		t.Fatalf("Failed to load config: %v", err)
 	}
 
-	if loadedConfig2.CookiesFile != "data/cookies.txt" {
-		t.Errorf("Expected cookies file 'data/cookies.txt', got '%s'", loadedConfig2.CookiesFile)
+	if loadedConfig2.YtDlp.CookiesFile != "data/cookies.txt" {
+		t.Errorf("Expected cookies file 'data/cookies.txt', got '%s'", loadedConfig2.YtDlp.CookiesFile)
 	}
 
 	// Cleanup

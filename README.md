@@ -50,24 +50,40 @@ All configuration can be managed through the web UI or by editing `data/config.j
 
 ```json
 {
-  "check_interval_seconds": 300,
+  "check_interval_seconds": "5m0s",
   "retention_days": 7,
   "download_dir": "../downloads",
   "file_name_pattern": "%(title)s-%(id)s.%(ext)s",
   "max_concurrent_downloads": 3,
-  "yt_dlp_update_interval_seconds": 86400,
-  "cookies_browser": "firefox",
-  "cookies_file": "data/cookies.txt"
+  "yt_dlp": {
+    "path": "yt-dlp",
+    "update_interval_seconds": "24h0m0s",
+    "cookies_browser": "firefox",
+    "cookies_file": "data/cookies.txt",
+    "extractor_sleep_interval_seconds": "0s",
+    "download_throughput_limit": "",
+    "restrict_filenames": false,
+    "cache_dir": "data/yt-dlp-cache"
+  }
 }
 ```
 
 ### Key Settings
 
-- **check_interval_seconds**: How often to check for new videos (default: 300)
+**Note:** Duration fields in `data/config.json` use Go duration strings (e.g. `"5m0s"`, `"24h0m0s"`). The web UI still accepts seconds and converts internally.
+
+- **check_interval_seconds**: How often to check for new videos (default: `5m0s`)
 - **retention_days**: Default retention period in days (default: 7)
 - **max_concurrent_downloads**: Number of simultaneous downloads (default: 3)
-- **cookies_browser**: Extract cookies from browser (`firefox` or `chrome`)
-- **cookies_file**: Path to Netscape format cookies file
+- **yt_dlp**: Settings for yt-dlp
+  - **path**: Path to yt-dlp executable
+  - **update_interval_seconds**: How often to auto-update yt-dlp (e.g. `24h0m0s`, `0s` to disable)
+  - **cookies_browser**: Extract cookies from browser (`firefox` or `chrome`)
+  - **cookies_file**: Path to Netscape format cookies file
+  - **extractor_sleep_interval_seconds**: Sleep between extractor requests (e.g. `0s` to disable)
+  - **download_throughput_limit**: Limit download speed (e.g. `100K`, `4.2M`)
+  - **restrict_filenames**: Use yt-dlp's filename restrictions
+  - **cache_dir**: Cache directory used by yt-dlp
 
 ### Per-Channel Settings
 
