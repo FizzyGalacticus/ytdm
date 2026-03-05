@@ -54,6 +54,13 @@ function formatDate(dateStr) {
     return date.toLocaleString();
 }
 
+// Escape HTML for safe rendering of logs
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 // Load status
 async function loadStatus() {
     try {
@@ -235,6 +242,31 @@ async function loadConfig() {
         }
     } catch (error) {
         showToast('Failed to load configuration', true);
+    }
+}
+
+// Load recent logs
+async function loadLogs() {
+    try {
+        const response = await fetch(`${API_BASE}/logs`);
+        const data = await response.json();
+        if (!data.success) {
+            document.getElementById('logsList').innerHTML = '<span class="text-danger">Failed to load logs</span>';
+            return;
+        }
+
+        const entries = (data.data && data.data.entries) ? data.data.entries : [];
+        if (entries.length === 0) {
+            document.getElementById('logsList').innerHTML = '<span class="text-muted">No logs available yet</span>';
+            return;
+        }
+
+        document.getElementById('logsList').innerHTML = entries.map((line) => escapeHtml(line)).join('\n');
+
+        const logsContainer = document.getElementById('logsList');
+        logsContainer.scrollTop = logsContainer.scrollHeight;
+    } catch (error) {
+        document.getElementById('logsList').innerHTML = '<span class="text-danger">Failed to load logs</span>';
     }
 }
 
@@ -524,15 +556,21 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     }
 });
 
+document.getElementById('refreshLogsBtn').addEventListener('click', () => {
+    loadLogs();
+});
+
 // Initial load
 loadStatus();
 loadChannels();
 loadVideos();
 loadConfig();
+loadLogs();
 
 // Refresh data every 30 seconds
 setInterval(() => {
     loadStatus();
     loadChannels();
     loadVideos();
+    loadLogs();
 }, 30000);

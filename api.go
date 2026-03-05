@@ -30,13 +30,15 @@ type APIServer struct {
 	config  *Config
 	storage *Storage
 	server  *http.Server
+	logs    *LogBuffer
 }
 
 // StartAPIServer starts the HTTP API server
-func StartAPIServer(ctx context.Context, config *Config, storage *Storage) {
+func StartAPIServer(ctx context.Context, config *Config, storage *Storage, logs *LogBuffer) {
 	api := &APIServer{
 		config:  config,
 		storage: storage,
+		logs:    logs,
 	}
 
 	mux := http.NewServeMux()
@@ -50,6 +52,7 @@ func StartAPIServer(ctx context.Context, config *Config, storage *Storage) {
 	mux.HandleFunc("/api/cookies", api.handleCookies)
 	mux.HandleFunc("/api/cookies/clear", api.handleClearCookies)
 	mux.HandleFunc("/api/status", api.handleStatus)
+	mux.HandleFunc("/api/logs", api.handleLogs)
 
 	// Static file server from embedded files
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -83,6 +86,24 @@ func StartAPIServer(ctx context.Context, config *Config, storage *Storage) {
 		log.Printf("API server shutdown error: %v", err)
 	}
 	log.Println("API server stopped")
+}
+
+// handleLogs returns recent in-memory log lines
+func (api *APIServer) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	entries := []string{}
+	if api.logs != nil {
+		entries = api.logs.GetEntries()
+	}
+
+	api.sendSuccess(w, map[string]interface{}{
+		"entries": entries,
+		"count":   len(entries),
+	})
 }
 
 // handleChannels handles GET and POST for channels

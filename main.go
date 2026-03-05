@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -11,7 +12,9 @@ import (
 )
 
 func main() {
+	logBuffer := NewLogBuffer(100)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(io.MultiWriter(os.Stdout, logBuffer))
 	log.Println("Starting YouTube Media Downloader")
 
 	// Load configuration
@@ -59,7 +62,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		StartAPIServer(ctx, config, storage)
+		StartAPIServer(ctx, config, storage, logBuffer)
 	}()
 	log.Printf("API server started on port %d", config.APIPort)
 
