@@ -238,6 +238,8 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downlo
 		"--no-playlist",
 		"-f", formatStr,
 		"--match-filters", matchFilter,
+		"--embed-chapters",
+		"--write-info-json",
 		videoURL,
 	)
 
