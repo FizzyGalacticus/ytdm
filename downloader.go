@@ -46,6 +46,7 @@ func (d *Downloader) buildYtDlpCommand(args ...string) *exec.Cmd {
 		"--user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
 		"--socket-timeout", "30", // 30 second socket timeout
 		"--extractor-args", "youtube:lang=en",
+		"--js-runtimes", "node", // Use node for JavaScript extraction (more reliable than deno)
 		"--windows-filenames",
 		"--quiet",
 	}
@@ -187,30 +188,36 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	return &info, nil
 }
 
-// buildFormatString constructs a yt-dlp format string based on desired quality
+// buildFormatString constructs a yt-dlp format string based on desired quality and format
 // quality can be "best", a specific height like "720", "480", "360", or empty for defaults
-func (d *Downloader) buildFormatString(quality string) string {
+// format can be "mp4", "webm", "mkv", or empty for any format (defaults to mp4)
+func (d *Downloader) buildFormatString(quality, format string) string {
 	quality = strings.TrimSpace(quality)
+	format = strings.TrimSpace(format)
 
-	if quality == "" || quality == "best" {
-		// Default: prefer mp4 format, fallback to best available
-		return "best[ext=mp4]/best"
+	// Default to mp4 if no format specified
+	if format == "" {
+		format = "mp4"
 	}
 
-	// Try to match specific quality (assume it's a height like "720", "480", etc.)
-	// Format: bestvideo[height<=720][ext=mp4]+bestaudio/best[ext=mp4]/best
-	return fmt.Sprintf("bestvideo[height<=%s][ext=mp4]+bestaudio/best[ext=mp4][height<=%s]/best", quality, quality)
+	if quality == "" || quality == "best" {
+		// Default: best video+audio in specified format, fallback to any format
+		return fmt.Sprintf("bestvideo[ext=%s]+bestaudio/best[ext=%s]/bestvideo+bestaudio/best", format, format)
+	}
+
+	// For specific quality heights, select best video up to that height in specified format
+	return fmt.Sprintf("bestvideo[height<=%s][ext=%s]+bestaudio[ext=%s]/bestvideo[height<=%s]+bestaudio/best", quality, format, format, quality)
 }
 
 // DownloadVideo downloads a video to the specified directory
-func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downloadShorts bool) error {
+func (d *Downloader) DownloadVideo(videoURL, channelName, quality, format string, downloadShorts bool) error {
 	// Create channel subdirectory
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	log.Printf("Downloading video: %s to %s (quality: %s, downloadShorts: %v)", videoURL, channelDir, quality, downloadShorts)
+	log.Printf("Downloading video: %s to %s (quality: %s, format: %s, downloadShorts: %v)", videoURL, channelDir, quality, format, downloadShorts)
 
 	// First, fetch metadata with yt-dlp
 	metadata, err := d.fetchVideoMetadata(videoURL)
@@ -219,8 +226,8 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downlo
 		metadata = nil // Continue with download even if metadata fails
 	}
 
-	// Build format string based on desired quality
-	formatStr := d.buildFormatString(quality)
+	// Build format string based on desired quality and format
+	formatStr := d.buildFormatString(quality, format)
 
 	// Build match filters based on shorts preference
 	var matchFilter string
@@ -229,7 +236,8 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downlo
 		matchFilter = "!is_live & duration>60"
 	} else {
 		// Exclude shorts: exclude live streams, short videos, and vertical aspect ratio
-		matchFilter = "!is_live & duration>60 & width>=height"
+		// Use aspect_ratio field which is a proper float comparison
+		matchFilter = "!is_live & duration>60 & aspect_ratio>=1"
 	}
 
 	// Build yt-dlp command for download
@@ -239,7 +247,6 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downlo
 		"-f", formatStr,
 		"--match-filters", matchFilter,
 		"--embed-chapters",
-		"--write-info-json",
 		videoURL,
 	)
 

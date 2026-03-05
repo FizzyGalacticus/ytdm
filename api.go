@@ -142,6 +142,11 @@ func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
 		channel.RetentionDays = api.config.RetentionDays
 	}
 
+	// Use default format if not specified
+	if channel.VideoFormat == "" {
+		channel.VideoFormat = api.config.DefaultVideoFormat
+	}
+
 	if err := api.storage.AddChannel(channel); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add channel: %v", err))
 		return
@@ -176,12 +181,13 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// updateChannel updates channel settings (retention days, cutoff date, video quality, shorts preference)
+// updateChannel updates channel settings (retention days, cutoff date, video quality, video format, shorts preference)
 func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id string) {
 	var updateData struct {
 		RetentionDays  int       `json:"retention_days"`
 		CutoffDate     time.Time `json:"cutoff_date"`
 		VideoQuality   string    `json:"video_quality"`
+		VideoFormat    string    `json:"video_format"`
 		DownloadShorts bool      `json:"download_shorts"`
 	}
 
@@ -190,7 +196,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.CutoffDate, updateData.VideoQuality, updateData.DownloadShorts); err != nil {
+	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel: %v", err))
 		return
 	}
@@ -233,6 +239,11 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	// Use default retention if not specified
 	if video.RetentionDays == 0 {
 		video.RetentionDays = api.config.RetentionDays
+	}
+
+	// Use default format if not specified
+	if video.VideoFormat == "" {
+		video.VideoFormat = api.config.DefaultVideoFormat
 	}
 
 	// DownloadShorts defaults to true if not explicitly disabled
