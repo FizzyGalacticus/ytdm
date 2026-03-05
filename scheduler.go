@@ -136,6 +136,14 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 				log.Printf("Error cleaning old videos for channel %s: %v", channel.Name, err)
 			}
 		}
+
+		// Clean old videos for individual video entries
+		videos := storage.GetVideos()
+		for _, video := range videos {
+			if err := downloader.CleanOldVideosForVideo(video.Title, video.ID, video.RetentionDays, storage); err != nil {
+				log.Printf("Error cleaning old videos for video %s: %v", video.Title, err)
+			}
+		}
 	} else {
 		shutdownMu.RUnlock()
 		log.Println("Skipping cleanup due to shutdown")
@@ -231,13 +239,13 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	// Retention is based on download date, so don't skip based on publish date
 
-	// Download the video
+	// Download the video with the video's preferred quality and shorts settings
 	channelName := info.Uploader
 	if channelName == "" {
 		channelName = "unknown"
 	}
 
-	if err := downloader.DownloadVideo(video.URL, channelName, "", true); err != nil {
+	if err := downloader.DownloadVideo(video.URL, channelName, video.VideoQuality, video.DownloadShorts); err != nil {
 		log.Printf("Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval
 		return err
