@@ -30,6 +30,20 @@
         .card-body {
             color: #dee2e6;
         }
+        .logs-container {
+            background-color: #111418;
+            color: #d1d5db;
+            border: 1px solid #495057;
+            border-radius: 0.375rem;
+            max-height: 60vh;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.85rem;
+            line-height: 1.35;
+            padding: 0.75rem;
+        }
     </style>
 </head>
 <body>
@@ -62,6 +76,11 @@
             <li class="nav-item" role="presentation">
                 <button class="nav-link" id="config-tab" data-bs-toggle="tab" data-bs-target="#config-pane" type="button" role="tab" aria-controls="config-pane" aria-selected="false">
                     <i class="bi bi-gear"></i> Configuration
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs-pane" type="button" role="tab" aria-controls="logs-pane" aria-selected="false">
+                    <i class="bi bi-journal-text"></i> Logs
                 </button>
             </li>
         </ul>
@@ -290,6 +309,21 @@
                         </div>
                     </div>
                 </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Tab -->
+            <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab">
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="card-title mb-0">Recent Logs (last 100)</h5>
+                            <button class="btn btn-outline-light btn-sm" id="refreshLogsBtn">
+                                <i class="bi bi-arrow-clockwise"></i> Refresh
+                            </button>
+                        </div>
+                        <div id="logsList" class="logs-container">Loading logs...</div>
                     </div>
                 </div>
             </div>
