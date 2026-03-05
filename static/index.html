@@ -71,6 +71,25 @@
                             <small class="text-muted">Ignore older videos</small>
                         </div>
                         <div class="col-md-2">
+                            <select class="form-control" id="channelQuality">
+                                <option value="">Default Quality</option>
+                                <option value="best">Best</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                            <small class="text-muted">Video quality</small>
+                        </div>
+                        <div class="col-md-2">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="channelDownloadShorts">
+                                <label class="form-check-label" for="channelDownloadShorts">
+                                    <small>Download shorts</small>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="col-md-2">
                             <button type="submit" class="btn btn-primary w-100"><i class="bi bi-plus-circle"></i> Add</button>
                         </div>
                     </div>
@@ -238,6 +257,60 @@
                         </div>
                     </div>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Channel Modal -->
+    <div class="modal fade" id="editChannelModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">Edit Channel</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editChannelForm">
+                        <input type="hidden" id="editChannelId">
+                        <div class="mb-3">
+                            <label for="editChannelName" class="form-label">Channel Name</label>
+                            <input type="text" class="form-control" id="editChannelName" disabled>
+                            <small class="text-muted">Cannot be changed</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editChannelRetention" class="form-label">Retention Days</label>
+                            <input type="number" class="form-control" id="editChannelRetention" min="1" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editChannelCutoffDate" class="form-label">Cutoff Date</label>
+                            <input type="date" class="form-control" id="editChannelCutoffDate">
+                            <small class="text-muted">Ignore older videos</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editChannelQuality" class="form-label">Video Quality</label>
+                            <select class="form-control" id="editChannelQuality">
+                                <option value="">Default Quality</option>
+                                <option value="best">Best</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editChannelDownloadShorts">
+                                <label class="form-check-label" for="editChannelDownloadShorts">
+                                    Download short-format videos
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveChannelEditsBtn">Save Changes</button>
+                </div>
             </div>
         </div>
     </div>

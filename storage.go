@@ -7,17 +7,25 @@ import (
 	"time"
 )
 
+// DownloadedVideo tracks a downloaded video with its download date
+type DownloadedVideo struct {
+	ID           string    `json:"id"`
+	DownloadDate time.Time `json:"download_date"`
+}
+
 // Channel represents a YouTube channel to monitor
 type Channel struct {
-	ID                 string    `json:"id"`
-	URL                string    `json:"url"`
-	Name               string    `json:"name"`
-	LastChecked        time.Time `json:"last_checked"`
-	RetentionDays      int       `json:"retention_days"`
-	CutoffDate         time.Time `json:"cutoff_date"`          // Don't download videos published before this date
-	DownloadedVideoIDs []string  `json:"downloaded_video_ids"` // Track which videos have been downloaded
-	LastError          string    `json:"last_error,omitempty"` // Most recent error message
-	LastErrorTime      time.Time `json:"last_error_time,omitempty"`
+	ID               string            `json:"id"`
+	URL              string            `json:"url"`
+	Name             string            `json:"name"`
+	LastChecked      time.Time         `json:"last_checked"`
+	RetentionDays    int               `json:"retention_days"`
+	CutoffDate       time.Time         `json:"cutoff_date"`          // Don't download videos published before this date
+	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
+	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
+	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
+	LastError        string            `json:"last_error,omitempty"` // Most recent error message
+	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
 }
 
 // Video represents a specific YouTube video to monitor
@@ -135,7 +143,25 @@ func (s *Storage) UpdateChannelLastChecked(id string, t time.Time) error {
 	return nil
 }
 
-// MarkVideoAsDownloaded adds a video ID to the channel's downloaded list
+// UpdateChannel updates retention days, cutoff date, video quality, and shorts preference for a channel
+func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Time, videoQuality string, downloadShorts bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID == id {
+			s.data.Channels[i].RetentionDays = retentionDays
+			s.data.Channels[i].CutoffDate = cutoffDate
+			s.data.Channels[i].VideoQuality = videoQuality
+			s.data.Channels[i].DownloadShorts = downloadShorts
+			return s.save()
+		}
+	}
+
+	return nil
+}
+
+// MarkVideoAsDownloaded adds a video ID to the channel's downloaded list with current timestamp
 func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -143,12 +169,15 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 	for i := range s.data.Channels {
 		if s.data.Channels[i].ID == channelID {
 			// Check if already marked
-			for _, id := range s.data.Channels[i].DownloadedVideoIDs {
-				if id == videoID {
+			for _, vid := range s.data.Channels[i].DownloadedVideos {
+				if vid.ID == videoID {
 					return nil // Already marked
 				}
 			}
-			s.data.Channels[i].DownloadedVideoIDs = append(s.data.Channels[i].DownloadedVideoIDs, videoID)
+			s.data.Channels[i].DownloadedVideos = append(s.data.Channels[i].DownloadedVideos, DownloadedVideo{
+				ID:           videoID,
+				DownloadDate: time.Now(),
+			})
 			return s.save()
 		}
 	}
@@ -163,8 +192,8 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 
 	for _, ch := range s.data.Channels {
 		if ch.ID == channelID {
-			for _, id := range ch.DownloadedVideoIDs {
-				if id == videoID {
+			for _, vid := range ch.DownloadedVideos {
+				if vid.ID == videoID {
 					return true
 				}
 			}
@@ -173,6 +202,25 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 	}
 
 	return false
+}
+
+// GetVideoDownloadDate returns the download date for a video, or zero time if not found
+func (s *Storage) GetVideoDownloadDate(channelID, videoID string) time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, ch := range s.data.Channels {
+		if ch.ID == channelID {
+			for _, vid := range ch.DownloadedVideos {
+				if vid.ID == videoID {
+					return vid.DownloadDate
+				}
+			}
+			break
+		}
+	}
+
+	return time.Time{}
 }
 
 // GetVideos returns all videos

@@ -130,7 +130,7 @@ func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
 	api.sendSuccess(w, channel)
 }
 
-// handleChannelByID handles DELETE for a specific channel
+// handleChannelByID handles DELETE and PUT for a specific channel
 func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) {
 	// Extract ID from path
 	parts := strings.Split(r.URL.Path, "/")
@@ -148,9 +148,34 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		}
 		log.Printf("Channel removed via API: %s", id)
 		api.sendSuccess(w, map[string]string{"id": id})
+	case http.MethodPut:
+		api.updateChannel(w, r, id)
 	default:
 		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+// updateChannel updates channel settings (retention days, cutoff date, video quality, shorts preference)
+func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id string) {
+	var updateData struct {
+		RetentionDays  int       `json:"retention_days"`
+		CutoffDate     time.Time `json:"cutoff_date"`
+		VideoQuality   string    `json:"video_quality"`
+		DownloadShorts bool      `json:"download_shorts"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.CutoffDate, updateData.VideoQuality, updateData.DownloadShorts); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel: %v", err))
+		return
+	}
+
+	log.Printf("Channel updated via API: %s", id)
+	api.sendSuccess(w, map[string]string{"id": id})
 }
 
 // handleVideos handles GET and POST for videos
