@@ -191,7 +191,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 
 		// Download the video
-		if err := downloader.DownloadVideo(video.ID, channel.Name, channel.VideoQuality, channel.DownloadShorts); err != nil {
+		if err := downloader.DownloadVideo(video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts); err != nil {
 			log.Printf("Failed to download video %s: %v", video.Title, err)
 			// Continue with other videos even if one fails
 		} else {
@@ -245,7 +245,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		channelName = "unknown"
 	}
 
-	if err := downloader.DownloadVideo(video.URL, channelName, video.VideoQuality, video.DownloadShorts); err != nil {
+	if err := downloader.DownloadVideo(video.URL, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts); err != nil {
 		log.Printf("Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval
 		return err

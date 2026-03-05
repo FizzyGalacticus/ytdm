@@ -13,9 +13,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflag
 # Runtime stage - use minimal alpine
 FROM alpine:3.19
 
-# Install only what's needed: python3, pip, ffmpeg, and wget for healthcheck
-# Install yt-dlp to user home directory for self-update capability
-RUN apk add --no-cache python3 py3-pip ffmpeg wget && \
+# Install only what's needed: python3, pip, ffmpeg, wget for healthcheck, node for yt-dlp JS extraction
+RUN apk add --no-cache python3 py3-pip ffmpeg wget nodejs && \
     rm -rf /root/.cache
 
 # Create non-root user first
@@ -44,8 +43,8 @@ COPY --from=builder /build/media_downloader .
 # Switch to non-root user
 USER downloader
 
-# Add user's pip bin to PATH for yt-dlp
-ENV PATH="/home/downloader/.local/bin:${PATH}"
+# Add user's pip bin to PATH for yt-dlp, and ensure deno is accessible
+ENV PATH="/home/downloader/.local/bin:/usr/bin:${PATH}"
 
 # Expose API port
 EXPOSE 8080

@@ -97,6 +97,9 @@ async function loadChannels() {
                     const qualityText = ch.video_quality 
                         ? `<span class="badge bg-primary ms-2">Quality: ${ch.video_quality}</span>`
                         : '';
+                    const formatText = ch.video_format 
+                        ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
+                        : '';
                     const hasError = ch.last_error && ch.last_error.trim().length > 0;
                     const errorBadge = hasError 
                         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
@@ -123,6 +126,7 @@ async function loadChannels() {
                                 <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
                                 ${cutoffText}
                                 ${qualityText}
+                                ${formatText}
                                 ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${ch.url}</small><br>
@@ -130,7 +134,7 @@ async function loadChannels() {
                                 ${errorSection}
                             </div>
                             <div class="ms-3">
-                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, '${ch.cutoff_date}', '${ch.video_quality}', ${ch.download_shorts})">
+                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
                                     <i class="bi bi-pencil"></i> Edit
                                 </button>
                                 <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
@@ -182,7 +186,8 @@ async function loadVideos() {
                             <div style="flex-grow: 1;">
                                 <strong>${vid.title}</strong>
                                 <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
-                                ${vid.video_quality ? `<span class="badge bg-info ms-2">${vid.video_quality}</span>` : ''}
+                                ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
+                                ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
                                 ${vid.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${vid.url}</small><br>
@@ -220,6 +225,7 @@ async function loadConfig() {
             document.getElementById('downloadDir').value = config.download_dir;
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
+            document.getElementById('defaultVideoFormat').value = config.default_video_format || 'mp4';
             
             const ytDlp = config.yt_dlp || {};
             
@@ -345,9 +351,10 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const retention = parseInt(document.getElementById('channelRetention').value) || 0;
     const cutoffDate = document.getElementById('channelCutoffDate').value;
     const quality = document.getElementById('channelQuality').value;
+    const format = document.getElementById('channelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('channelDownloadShorts').checked;
 
-    const channelData = { name, url, retention_days: retention, video_quality: quality, download_shorts: downloadShorts };
+    const channelData = { name, url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
     }
@@ -392,7 +399,7 @@ async function removeChannel(id) {
 }
 
 // Open edit channel modal
-function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality, downloadShorts) {
+function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality, videoFormat, downloadShorts) {
     document.getElementById('editChannelId').value = id;
     document.getElementById('editChannelName').value = name;
     document.getElementById('editChannelRetention').value = retentionDays || '';
@@ -406,6 +413,7 @@ function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality,
     }
     
     document.getElementById('editChannelQuality').value = videoQuality || '';
+    document.getElementById('editChannelFormat').value = videoFormat || '';
     document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
     
     const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
@@ -418,11 +426,13 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
     const retentionDays = parseInt(document.getElementById('editChannelRetention').value) || 0;
     const cutoffDate = document.getElementById('editChannelCutoffDate').value;
     const videoQuality = document.getElementById('editChannelQuality').value;
+    const videoFormat = document.getElementById('editChannelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
 
     const updateData = {
         retention_days: retentionDays,
         video_quality: videoQuality,
+        video_format: videoFormat,
         download_shorts: downloadShorts
     };
 
@@ -460,13 +470,14 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
     const url = document.getElementById('videoURL').value;
     const retention = parseInt(document.getElementById('videoRetention').value) || 0;
     const quality = document.getElementById('videoQuality').value;
+    const format = document.getElementById('videoFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('videoDownloadShorts').checked;
 
     try {
         const response = await fetch(`${API_BASE}/videos`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, url, retention_days: retention, video_quality: quality, download_shorts: downloadShorts })
+            body: JSON.stringify({ title, url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts })
         });
         const data = await response.json();
         if (data.success) {
@@ -528,6 +539,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
         download_dir: document.getElementById('downloadDir').value,
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),
+        default_video_format: document.getElementById('defaultVideoFormat').value || 'mp4',
         yt_dlp: {
             update_interval_seconds: updateIntervalStr,
             extractor_sleep_interval_seconds: sleepIntervalStr,

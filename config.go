@@ -10,9 +10,9 @@ import (
 // YtDlpConfig holds yt-dlp specific configuration
 type YtDlpConfig struct {
 	Path                    string `json:"path"`
-	UpdateInterval          string `json:"update_interval_seconds"` // Go duration string (e.g., "24h0m0s")
-	CookiesBrowser          string `json:"cookies_browser"`         // firefox, chrome, or empty to disable
-	CookiesFile             string `json:"cookies_file"`            // path to cookies.txt file
+	UpdateInterval          string `json:"update_interval_seconds"`          // Go duration string (e.g., "24h0m0s")
+	CookiesBrowser          string `json:"cookies_browser"`                  // firefox, chrome, or empty to disable
+	CookiesFile             string `json:"cookies_file"`                     // path to cookies.txt file
 	ExtractorSleepInterval  string `json:"extractor_sleep_interval_seconds"` // Go duration string
 	DownloadThroughputLimit string `json:"download_throughput_limit"`
 	RestrictFilenames       bool   `json:"restrict_filenames"`
@@ -22,24 +22,26 @@ type YtDlpConfig struct {
 // Config holds the application configuration
 type Config struct {
 	sync.RWMutex
-	CheckInterval   string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
-	RetentionDays   int         `json:"retention_days"`
-	DownloadDir     string      `json:"download_dir"`
-	FileNamePattern string      `json:"file_name_pattern"`
-	APIPort         int         `json:"api_port"`
-	MaxConcurrent   int         `json:"max_concurrent_downloads"`
-	YtDlp           YtDlpConfig `json:"yt_dlp"`
+	CheckInterval      string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
+	RetentionDays      int         `json:"retention_days"`
+	DownloadDir        string      `json:"download_dir"`
+	FileNamePattern    string      `json:"file_name_pattern"`
+	APIPort            int         `json:"api_port"`
+	MaxConcurrent      int         `json:"max_concurrent_downloads"`
+	DefaultVideoFormat string      `json:"default_video_format"` // mp4, webm, mkv
+	YtDlp              YtDlpConfig `json:"yt_dlp"`
 }
 
 // DefaultConfig returns a Config with default values
 func DefaultConfig() *Config {
 	return &Config{
-		CheckInterval:   "5m0s",
-		RetentionDays:   7,
-		DownloadDir:     "/downloads",
-		FileNamePattern: "%(title)s-%(id)s.%(ext)s",
-		APIPort:         8080,
-		MaxConcurrent:   3,
+		CheckInterval:      "5m0s",
+		RetentionDays:      7,
+		DownloadDir:        "/downloads",
+		FileNamePattern:    "%(title)s-%(id)s.%(ext)s",
+		APIPort:            8080,
+		MaxConcurrent:      3,
+		DefaultVideoFormat: "mp4",
 		YtDlp: YtDlpConfig{
 			Path:                    "yt-dlp",
 			UpdateInterval:          "24h0m0s",
@@ -112,6 +114,9 @@ func applyConfigDefaults(c *Config) {
 	}
 	if c.YtDlp.ExtractorSleepInterval == "" {
 		c.YtDlp.ExtractorSleepInterval = "0s"
+	}
+	if c.DefaultVideoFormat == "" {
+		c.DefaultVideoFormat = "mp4"
 	}
 }
 

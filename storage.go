@@ -22,6 +22,7 @@ type Channel struct {
 	RetentionDays    int               `json:"retention_days"`
 	CutoffDate       time.Time         `json:"cutoff_date"`          // Don't download videos published before this date
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
+	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
@@ -36,6 +37,7 @@ type Video struct {
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
+	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
@@ -146,8 +148,8 @@ func (s *Storage) UpdateChannelLastChecked(id string, t time.Time) error {
 	return nil
 }
 
-// UpdateChannel updates retention days, cutoff date, video quality, and shorts preference for a channel
-func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Time, videoQuality string, downloadShorts bool) error {
+// UpdateChannel updates retention days, cutoff date, video quality, video format, and shorts preference for a channel
+func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Time, videoQuality, videoFormat string, downloadShorts bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -156,6 +158,7 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Ti
 			s.data.Channels[i].RetentionDays = retentionDays
 			s.data.Channels[i].CutoffDate = cutoffDate
 			s.data.Channels[i].VideoQuality = videoQuality
+			s.data.Channels[i].VideoFormat = videoFormat
 			s.data.Channels[i].DownloadShorts = downloadShorts
 			return s.save()
 		}
