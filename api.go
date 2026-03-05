@@ -214,6 +214,11 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 		video.RetentionDays = api.config.RetentionDays
 	}
 
+	// DownloadShorts defaults to true if not explicitly disabled
+	if !video.DownloadShorts && video.VideoQuality == "" {
+		video.DownloadShorts = true
+	}
+
 	if err := api.storage.AddVideo(video); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add video: %v", err))
 		return

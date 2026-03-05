@@ -262,6 +262,7 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downlo
 
 // CleanOldVideosForChannel removes videos older than the retention period for a specific channel
 // using download dates stored in persistence rather than file modification times
+// Also removes stale entries from the downloaded list if files no longer exist
 func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, storage *Storage) error {
 	if retentionDays <= 0 {
 		return nil
@@ -275,6 +276,42 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	log.Printf("Cleaning old videos for channel %s (retention: %d days)", channelName, retentionDays)
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
 
+	// Get list of downloaded videos to check against
+	channels := storage.GetChannels()
+	var channelData *Channel
+	for _, ch := range channels {
+		if ch.ID == channelID {
+			channelData = &ch
+			break
+		}
+	}
+
+	if channelData == nil {
+		return nil // Channel not found
+	}
+
+	// First, remove stale entries (where files don't exist)
+	for _, vid := range channelData.DownloadedVideos {
+		fileFound := false
+		// Check if any file contains this video ID
+		entries, err := os.ReadDir(channelDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.Contains(entry.Name(), vid.ID) {
+					fileFound = true
+					break
+				}
+			}
+		}
+
+		// If file doesn't exist but is recorded, remove the entry
+		if !fileFound {
+			log.Printf("Removing stale entry for video %s (file not found)", vid.ID)
+			storage.RemoveDownloadedVideo(channelID, vid.ID)
+		}
+	}
+
+	// Then, delete old files from disk
 	return filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
@@ -285,30 +322,17 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 			return nil
 		}
 
-		// Extract video ID from filename (assumes format contains ID)
-		// For now, we'll try to match by checking if the file is referenced in any downloaded video
-		// If we can't find the video in storage, use file mtime as fallback
-
-		// Try to extract video ID from the filename (it's usually at the end before extension)
 		baseName := filepath.Base(path)
 
 		// Find the video ID by checking all downloaded videos for this channel
 		var foundDownloadDate time.Time
 		fallbackToMtime := true
 
-		// Get list of downloaded videos to find matching one
-		channels := storage.GetChannels()
-		for _, ch := range channels {
-			if ch.ID == channelID {
-				// Try to find this file in the downloaded videos
-				for _, vid := range ch.DownloadedVideos {
-					// Check if the video ID appears in the filename
-					if strings.Contains(baseName, vid.ID) {
-						foundDownloadDate = vid.DownloadDate
-						fallbackToMtime = false
-						break
-					}
-				}
+		for _, vid := range channelData.DownloadedVideos {
+			// Check if the video ID appears in the filename
+			if strings.Contains(baseName, vid.ID) {
+				foundDownloadDate = vid.DownloadDate
+				fallbackToMtime = false
 				break
 			}
 		}
@@ -333,7 +357,108 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	})
 }
 
-// CleanOldVideos removes videos older than the retention period (legacy method for global cleanup)
+// CleanOldVideosForVideo removes videos older than the retention period for a specific individual video entry
+// using download dates stored in persistence rather than file modification times
+// Also removes stale entries from the downloaded list if files no longer exist
+func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentionDays int, storage *Storage) error {
+	if retentionDays <= 0 {
+		return nil
+	}
+
+	log.Printf("Cleaning old videos for individual video %s (retention: %d days)", videoTitle, retentionDays)
+	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
+
+	// Get the video entry to check its downloaded videos
+	videos := storage.GetVideos()
+	var videoEntry *Video
+	for i := range videos {
+		if videos[i].ID == videoID {
+			videoEntry = &videos[i]
+			break
+		}
+	}
+
+	if videoEntry == nil {
+		return nil // Video entry not found
+	}
+
+	// First, remove stale entries (where files don't exist anywhere in downloads)
+	for _, vid := range videoEntry.DownloadedVideos {
+		fileFound := false
+		// Check if any file in the downloads directory contains this video ID
+		entries, err := os.ReadDir(d.config.DownloadDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.Contains(entry.Name(), vid.ID) {
+					fileFound = true
+					break
+				} else if entry.IsDir() {
+					// Also check subdirectories
+					subEntries, err := os.ReadDir(filepath.Join(d.config.DownloadDir, entry.Name()))
+					if err == nil {
+						for _, subEntry := range subEntries {
+							if !subEntry.IsDir() && strings.Contains(subEntry.Name(), vid.ID) {
+								fileFound = true
+								break
+							}
+						}
+					}
+					if fileFound {
+						break
+					}
+				}
+			}
+		}
+
+		// If file doesn't exist but is recorded, remove the entry
+		if !fileFound {
+			log.Printf("Removing stale entry for video %s (file not found)", vid.ID)
+			storage.RemoveDownloadedVideo(videoID, vid.ID)
+		}
+	}
+
+	// Then, delete old files from disk
+	return filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip files with errors
+		}
+
+		// Skip directories
+		if info.IsDir() {
+			return nil
+		}
+
+		baseName := filepath.Base(path)
+
+		// Check if this file matches any of the downloaded videos for this entry
+		var foundDownloadDate time.Time
+		for _, vid := range videoEntry.DownloadedVideos {
+			// Check if the video ID appears in the filename
+			if strings.Contains(baseName, vid.ID) {
+				foundDownloadDate = vid.DownloadDate
+				break
+			}
+		}
+
+		// Check if file is older than cutoff
+		var timeToCheck time.Time
+		if !foundDownloadDate.IsZero() {
+			timeToCheck = foundDownloadDate
+		} else {
+			// Fallback to file modification time if we couldn't find in storage
+			timeToCheck = info.ModTime()
+		}
+
+		if timeToCheck.Before(cutoffTime) {
+			log.Printf("Removing old video: %s (download date: %s)", path, timeToCheck)
+			if err := os.Remove(path); err != nil {
+				log.Printf("Failed to remove %s: %v", path, err)
+			}
+		}
+
+		return nil
+	})
+}
 func (d *Downloader) CleanOldVideos() error {
 	log.Printf("Cleaning old videos (retention: %d days)", d.config.RetentionDays)
 

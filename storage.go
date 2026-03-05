@@ -30,13 +30,16 @@ type Channel struct {
 
 // Video represents a specific YouTube video to monitor
 type Video struct {
-	ID            string    `json:"id"`
-	URL           string    `json:"url"`
-	Title         string    `json:"title"`
-	LastChecked   time.Time `json:"last_checked"`
-	RetentionDays int       `json:"retention_days"`
-	LastError     string    `json:"last_error,omitempty"` // Most recent error message
-	LastErrorTime time.Time `json:"last_error_time,omitempty"`
+	ID               string            `json:"id"`
+	URL              string            `json:"url"`
+	Title            string            `json:"title"`
+	LastChecked      time.Time         `json:"last_checked"`
+	RetentionDays    int               `json:"retention_days"`
+	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
+	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
+	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
+	LastError        string            `json:"last_error,omitempty"` // Most recent error message
+	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
 }
 
 // StorageData holds all persisted data
@@ -161,11 +164,13 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Ti
 	return nil
 }
 
-// MarkVideoAsDownloaded adds a video ID to the channel's downloaded list with current timestamp
+// MarkVideoAsDownloaded adds a video ID to the appropriate download list with current timestamp
+// Can be used for both channel videos (channelID is a channel ID) or individual videos (channelID is a video ID)
 func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// First, try to find as a channel
 	for i := range s.data.Channels {
 		if s.data.Channels[i].ID == channelID {
 			// Check if already marked
@@ -182,14 +187,32 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 		}
 	}
 
+	// If not found in channels, try to find as an individual video
+	for i := range s.data.Videos {
+		if s.data.Videos[i].ID == channelID {
+			// Check if already marked
+			for _, vid := range s.data.Videos[i].DownloadedVideos {
+				if vid.ID == videoID {
+					return nil // Already marked
+				}
+			}
+			s.data.Videos[i].DownloadedVideos = append(s.data.Videos[i].DownloadedVideos, DownloadedVideo{
+				ID:           videoID,
+				DownloadDate: time.Now(),
+			})
+			return s.save()
+		}
+	}
+
 	return nil
 }
 
-// IsVideoDownloaded checks if a video has been downloaded for a channel
+// IsVideoDownloaded checks if a video has been downloaded for a channel or individual video
 func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// First, check in channels
 	for _, ch := range s.data.Channels {
 		if ch.ID == channelID {
 			for _, vid := range ch.DownloadedVideos {
@@ -201,7 +224,61 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 		}
 	}
 
+	// Then, check in individual videos
+	for _, v := range s.data.Videos {
+		if v.ID == channelID {
+			for _, vid := range v.DownloadedVideos {
+				if vid.ID == videoID {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
 	return false
+}
+
+// RemoveDownloadedVideo removes a specific video ID from a channel's or video's downloaded list
+func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// First, try to find as a channel
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID == containerID {
+			// Remove the video from the downloaded list
+			for j := range s.data.Channels[i].DownloadedVideos {
+				if s.data.Channels[i].DownloadedVideos[j].ID == videoID {
+					s.data.Channels[i].DownloadedVideos = append(
+						s.data.Channels[i].DownloadedVideos[:j],
+						s.data.Channels[i].DownloadedVideos[j+1:]...,
+					)
+					return s.save()
+				}
+			}
+			return nil // Video not found in list
+		}
+	}
+
+	// If not found in channels, try to find as an individual video
+	for i := range s.data.Videos {
+		if s.data.Videos[i].ID == containerID {
+			// Remove the video from the downloaded list
+			for j := range s.data.Videos[i].DownloadedVideos {
+				if s.data.Videos[i].DownloadedVideos[j].ID == videoID {
+					s.data.Videos[i].DownloadedVideos = append(
+						s.data.Videos[i].DownloadedVideos[:j],
+						s.data.Videos[i].DownloadedVideos[j+1:]...,
+					)
+					return s.save()
+				}
+			}
+			return nil // Video not found in list
+		}
+	}
+
+	return nil // Container not found
 }
 
 // GetVideoDownloadDate returns the download date for a video, or zero time if not found

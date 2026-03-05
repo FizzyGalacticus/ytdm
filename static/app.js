@@ -175,6 +175,8 @@ async function loadVideos() {
                             <div style="flex-grow: 1;">
                                 <strong>${vid.title}</strong>
                                 <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
+                                ${vid.video_quality ? `<span class="badge bg-info ms-2">${vid.video_quality}</span>` : ''}
+                                ${vid.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${vid.url}</small><br>
                                 <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
@@ -425,12 +427,14 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
     const title = document.getElementById('videoTitle').value;
     const url = document.getElementById('videoURL').value;
     const retention = parseInt(document.getElementById('videoRetention').value) || 0;
+    const quality = document.getElementById('videoQuality').value;
+    const downloadShorts = document.getElementById('videoDownloadShorts').checked;
 
     try {
         const response = await fetch(`${API_BASE}/videos`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, url, retention_days: retention })
+            body: JSON.stringify({ title, url, retention_days: retention, video_quality: quality, download_shorts: downloadShorts })
         });
         const data = await response.json();
         if (data.success) {
