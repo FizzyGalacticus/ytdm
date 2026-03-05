@@ -87,6 +87,9 @@ async function loadChannels() {
                     const cutoffText = ch.cutoff_date && ch.cutoff_date !== '0001-01-01T00:00:00Z' 
                         ? `<span class="badge bg-info ms-2">From: ${new Date(ch.cutoff_date).toLocaleDateString()}</span>` 
                         : '';
+                    const qualityText = ch.video_quality 
+                        ? `<span class="badge bg-primary ms-2">Quality: ${ch.video_quality}</span>`
+                        : '';
                     const hasError = ch.last_error && ch.last_error.trim().length > 0;
                     const errorBadge = hasError 
                         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
@@ -112,14 +115,21 @@ async function loadChannels() {
                                 <strong>${ch.name}</strong>
                                 <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
                                 ${cutoffText}
+                                ${qualityText}
+                                ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${ch.url}</small><br>
                                 <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
                                 ${errorSection}
                             </div>
-                            <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
-                                <i class="bi bi-trash"></i> Remove
-                            </button>
+                            <div class="ms-3">
+                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, '${ch.cutoff_date}', '${ch.video_quality}', ${ch.download_shorts})">
+                                    <i class="bi bi-pencil"></i> Edit
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
+                                    <i class="bi bi-trash"></i> Remove
+                                </button>
+                            </div>
                         </div>
                     `;
                 }).join('');
@@ -300,8 +310,10 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const url = document.getElementById('channelURL').value;
     const retention = parseInt(document.getElementById('channelRetention').value) || 0;
     const cutoffDate = document.getElementById('channelCutoffDate').value;
+    const quality = document.getElementById('channelQuality').value;
+    const downloadShorts = document.getElementById('channelDownloadShorts').checked;
 
-    const channelData = { name, url, retention_days: retention };
+    const channelData = { name, url, retention_days: retention, video_quality: quality, download_shorts: downloadShorts };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
     }
@@ -344,6 +356,68 @@ async function removeChannel(id) {
         showToast('Failed to remove channel', true);
     }
 }
+
+// Open edit channel modal
+function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality, downloadShorts) {
+    document.getElementById('editChannelId').value = id;
+    document.getElementById('editChannelName').value = name;
+    document.getElementById('editChannelRetention').value = retentionDays || '';
+    
+    // Convert ISO date to YYYY-MM-DD format for date input
+    if (cutoffDate && cutoffDate !== '0001-01-01T00:00:00Z') {
+        const date = new Date(cutoffDate);
+        document.getElementById('editChannelCutoffDate').value = date.toISOString().split('T')[0];
+    } else {
+        document.getElementById('editChannelCutoffDate').value = '';
+    }
+    
+    document.getElementById('editChannelQuality').value = videoQuality || '';
+    document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
+    
+    const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
+    modal.show();
+}
+
+// Save channel edits
+document.getElementById('saveChannelEditsBtn').addEventListener('click', async () => {
+    const id = document.getElementById('editChannelId').value;
+    const retentionDays = parseInt(document.getElementById('editChannelRetention').value) || 0;
+    const cutoffDate = document.getElementById('editChannelCutoffDate').value;
+    const videoQuality = document.getElementById('editChannelQuality').value;
+    const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
+
+    const updateData = {
+        retention_days: retentionDays,
+        video_quality: videoQuality,
+        download_shorts: downloadShorts
+    };
+
+    // Only include cutoff date if it's set
+    if (cutoffDate) {
+        updateData.cutoff_date = new Date(cutoffDate).toISOString();
+    } else {
+        updateData.cutoff_date = '0001-01-01T00:00:00Z';
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/channels/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updateData)
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('Channel updated successfully');
+            bootstrap.Modal.getInstance(document.getElementById('editChannelModal')).hide();
+            loadChannels();
+            loadStatus();
+        } else {
+            showToast(data.message || 'Failed to update channel', true);
+        }
+    } catch (error) {
+        showToast('Failed to update channel', true);
+    }
+});
 
 // Add video
 document.getElementById('addVideoForm').addEventListener('submit', async (e) => {

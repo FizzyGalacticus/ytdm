@@ -187,15 +187,30 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	return &info, nil
 }
 
+// buildFormatString constructs a yt-dlp format string based on desired quality
+// quality can be "best", a specific height like "720", "480", "360", or empty for defaults
+func (d *Downloader) buildFormatString(quality string) string {
+	quality = strings.TrimSpace(quality)
+
+	if quality == "" || quality == "best" {
+		// Default: prefer mp4 format, fallback to best available
+		return "best[ext=mp4]/best"
+	}
+
+	// Try to match specific quality (assume it's a height like "720", "480", etc.)
+	// Format: bestvideo[height<=720][ext=mp4]+bestaudio/best[ext=mp4]/best
+	return fmt.Sprintf("bestvideo[height<=%s][ext=mp4]+bestaudio/best[ext=mp4][height<=%s]/best", quality, quality)
+}
+
 // DownloadVideo downloads a video to the specified directory
-func (d *Downloader) DownloadVideo(videoURL, channelName string) error {
+func (d *Downloader) DownloadVideo(videoURL, channelName, quality string, downloadShorts bool) error {
 	// Create channel subdirectory
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	log.Printf("Downloading video: %s to %s", videoURL, channelDir)
+	log.Printf("Downloading video: %s to %s (quality: %s, downloadShorts: %v)", videoURL, channelDir, quality, downloadShorts)
 
 	// First, fetch metadata with yt-dlp
 	metadata, err := d.fetchVideoMetadata(videoURL)
@@ -204,12 +219,25 @@ func (d *Downloader) DownloadVideo(videoURL, channelName string) error {
 		metadata = nil // Continue with download even if metadata fails
 	}
 
+	// Build format string based on desired quality
+	formatStr := d.buildFormatString(quality)
+
+	// Build match filters based on shorts preference
+	var matchFilter string
+	if downloadShorts {
+		// Allow shorts: only exclude live streams and very short videos
+		matchFilter = "!is_live & duration>60"
+	} else {
+		// Exclude shorts: exclude live streams, short videos, and vertical aspect ratio
+		matchFilter = "!is_live & duration>60 & width>=height"
+	}
+
 	// Build yt-dlp command for download
 	cmd := d.buildYtDlpCommand(
 		"-o", filepath.Join(channelDir, d.config.FileNamePattern),
 		"--no-playlist",
-		"-f", "best[ext=mp4]/best",  // Prefer mp4 format, fallback to best available
-		"--match-filters", "!is_live & duration>60",  // Exclude live streams and videos shorter than 60 seconds (shorts)
+		"-f", formatStr,
+		"--match-filters", matchFilter,
 		videoURL,
 	)
 
@@ -233,7 +261,8 @@ func (d *Downloader) DownloadVideo(videoURL, channelName string) error {
 }
 
 // CleanOldVideosForChannel removes videos older than the retention period for a specific channel
-func (d *Downloader) CleanOldVideosForChannel(channelName string, retentionDays int) error {
+// using download dates stored in persistence rather than file modification times
+func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, storage *Storage) error {
 	if retentionDays <= 0 {
 		return nil
 	}
@@ -256,9 +285,45 @@ func (d *Downloader) CleanOldVideosForChannel(channelName string, retentionDays 
 			return nil
 		}
 
+		// Extract video ID from filename (assumes format contains ID)
+		// For now, we'll try to match by checking if the file is referenced in any downloaded video
+		// If we can't find the video in storage, use file mtime as fallback
+
+		// Try to extract video ID from the filename (it's usually at the end before extension)
+		baseName := filepath.Base(path)
+
+		// Find the video ID by checking all downloaded videos for this channel
+		var foundDownloadDate time.Time
+		fallbackToMtime := true
+
+		// Get list of downloaded videos to find matching one
+		channels := storage.GetChannels()
+		for _, ch := range channels {
+			if ch.ID == channelID {
+				// Try to find this file in the downloaded videos
+				for _, vid := range ch.DownloadedVideos {
+					// Check if the video ID appears in the filename
+					if strings.Contains(baseName, vid.ID) {
+						foundDownloadDate = vid.DownloadDate
+						fallbackToMtime = false
+						break
+					}
+				}
+				break
+			}
+		}
+
 		// Check if file is older than cutoff
-		if info.ModTime().Before(cutoffTime) {
-			log.Printf("Removing old video: %s (modified: %s)", path, info.ModTime())
+		var timeToCheck time.Time
+		if !fallbackToMtime && !foundDownloadDate.IsZero() {
+			timeToCheck = foundDownloadDate
+		} else {
+			// Fallback to file modification time if we couldn't find in storage
+			timeToCheck = info.ModTime()
+		}
+
+		if timeToCheck.Before(cutoffTime) {
+			log.Printf("Removing old video: %s (download date: %s)", path, timeToCheck)
 			if err := os.Remove(path); err != nil {
 				log.Printf("Failed to remove %s: %v", path, err)
 			}
@@ -342,10 +407,10 @@ func (d *Downloader) fetchVideoMetadata(videoURL string) (*VideoMetadata, error)
 	}
 
 	metadata := &VideoMetadata{
-		ID: fmt.Sprintf("%v", data["id"]),
-		Title: fmt.Sprintf("%v", data["title"]),
+		ID:          fmt.Sprintf("%v", data["id"]),
+		Title:       fmt.Sprintf("%v", data["title"]),
 		Description: fmt.Sprintf("%v", data["description"]),
-		Uploader: fmt.Sprintf("%v", data["uploader"]),
+		Uploader:    fmt.Sprintf("%v", data["uploader"]),
 	}
 
 	if uploadDate, ok := data["upload_date"].(string); ok && len(uploadDate) >= 8 {

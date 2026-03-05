@@ -22,9 +22,12 @@ RUN apk add --no-cache python3 py3-pip ffmpeg wget && \
 RUN addgroup -g 1000 downloader && \
     adduser -D -u 1000 -G downloader downloader
 
-# Install yt-dlp as the downloader user to allow self-updates
+# Install yt-dlp binary as the downloader user to allow self-updates
 USER downloader
-RUN pip3 install --user --no-cache-dir --break-system-packages yt-dlp
+RUN mkdir -p /home/downloader/.local/bin && \
+    wget -q -O /home/downloader/.local/bin/yt-dlp \
+      https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
+    chmod +x /home/downloader/.local/bin/yt-dlp
 
 # Switch back to root for directory setup
 USER root
