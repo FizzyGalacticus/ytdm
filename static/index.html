@@ -359,6 +359,31 @@
         </div>
     </div>
 
+    <!-- Channel Videos Modal -->
+    <div class="modal fade" id="channelVideosModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title"><i class="bi bi-film"></i> Downloaded Videos - <span id="channelVideosName"></span></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="channelVideosCount" class="mb-3 text-muted"></div>
+                    <div id="channelVideosList" style="max-height: 400px; overflow-y: auto;">
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Edit Channel Modal -->
     <div class="modal fade" id="editChannelModal" tabindex="-1">
         <div class="modal-dialog">

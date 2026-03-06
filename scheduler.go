@@ -202,7 +202,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			log.Printf("Skipped video %s (%s): %s", video.Title, video.ID, result.SkipReason)
 		} else {
 			// Mark as downloaded
-			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID); err != nil {
+			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title); err != nil {
 				log.Printf("Failed to mark video as downloaded: %v", err)
 			}
 			downloadCount++
@@ -267,7 +267,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	// Mark as downloaded
-	if err := storage.MarkVideoAsDownloaded(video.ID, info.ID); err != nil {
+	if err := storage.MarkVideoAsDownloaded(video.ID, info.ID, info.Title); err != nil {
 		log.Printf("Failed to mark video as downloaded: %v", err)
 	}
 
