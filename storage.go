@@ -10,6 +10,7 @@ import (
 // DownloadedVideo tracks a downloaded video with its download date
 type DownloadedVideo struct {
 	ID           string    `json:"id"`
+	Title        string    `json:"title"`
 	DownloadDate time.Time `json:"download_date"`
 }
 
@@ -169,7 +170,7 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Ti
 
 // MarkVideoAsDownloaded adds a video ID to the appropriate download list with current timestamp
 // Can be used for both channel videos (channelID is a channel ID) or individual videos (channelID is a video ID)
-func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
+func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -184,6 +185,7 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 			}
 			s.data.Channels[i].DownloadedVideos = append(s.data.Channels[i].DownloadedVideos, DownloadedVideo{
 				ID:           videoID,
+				Title:        videoTitle,
 				DownloadDate: time.Now(),
 			})
 			return s.save()
@@ -201,6 +203,7 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID string) error {
 			}
 			s.data.Videos[i].DownloadedVideos = append(s.data.Videos[i].DownloadedVideos, DownloadedVideo{
 				ID:           videoID,
+				Title:        videoTitle,
 				DownloadDate: time.Now(),
 			})
 			return s.save()

@@ -125,7 +125,7 @@ func TestStorageVideoDownloadTracking(t *testing.T) {
 	}
 
 	// Mark as downloaded
-	if err := storage.MarkVideoAsDownloaded(channel.ID, videoID); err != nil {
+	if err := storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video"); err != nil {
 		t.Errorf("Failed to mark video as downloaded: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func TestStorageGetVideoDownloadDate(t *testing.T) {
 	}
 
 	// Mark as downloaded
-	storage.MarkVideoAsDownloaded(channel.ID, videoID)
+	storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video")
 
 	// Should now return non-zero time
 	downloadDate = storage.GetVideoDownloadDate(channel.ID, videoID)
@@ -272,7 +272,7 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	videoID := "test-video-456"
 
 	// Mark video as downloaded
-	storage.MarkVideoAsDownloaded(channel.ID, videoID)
+	storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video")
 	if !storage.IsVideoDownloaded(channel.ID, videoID) {
 		t.Fatal("Video should be marked as downloaded")
 	}
@@ -409,7 +409,7 @@ func TestStorageConcurrency(t *testing.T) {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
 				videoID := "video-" + string(rune('0'+id))
-				storage.MarkVideoAsDownloaded(channel.ID, videoID)
+				storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video")
 				storage.IsVideoDownloaded(channel.ID, videoID)
 			}
 			done <- true
@@ -508,7 +508,7 @@ func TestStorageEdgeCases(t *testing.T) {
 	})
 
 	t.Run("mark video downloaded for non-existent channel returns no error", func(t *testing.T) {
-		err := storage.MarkVideoAsDownloaded("non-existent-channel", "video-id")
+		err := storage.MarkVideoAsDownloaded("non-existent-channel", "video-id", "Test Video")
 		if err != nil {
 			t.Errorf("Expected no error when marking video downloaded for non-existent channel, got: %v", err)
 		}

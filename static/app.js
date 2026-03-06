@@ -134,6 +134,9 @@ async function loadChannels() {
                                 ${errorSection}
                             </div>
                             <div class="ms-3">
+                                <button class="btn btn-info btn-sm me-2" onclick="showChannelVideos('${ch.id}', '${escapeHtml(ch.name)}')">
+                                    <i class="bi bi-film"></i> Videos
+                                </button>
                                 <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
                                     <i class="bi bi-pencil"></i> Edit
                                 </button>
@@ -395,6 +398,76 @@ async function removeChannel(id) {
         }
     } catch (error) {
         showToast('Failed to remove channel', true);
+    }
+}
+
+// Show channel videos modal
+async function showChannelVideos(channelId, channelName) {
+    // Set channel name in modal
+    document.getElementById('channelVideosName').textContent = channelName;
+    
+    // Show loading spinner
+    document.getElementById('channelVideosList').innerHTML = `
+        <div class="text-center">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+        </div>
+    `;
+    
+    // Open modal
+    const modal = new bootstrap.Modal(document.getElementById('channelVideosModal'));
+    modal.show();
+    
+    // Fetch channel data
+    try {
+        const response = await fetch(`${API_BASE}/channels`);
+        const data = await response.json();
+        
+        if (data.success) {
+            const channels = data.data || [];
+            const channel = channels.find(ch => ch.id === channelId);
+            
+            if (channel && channel.downloaded_videos && channel.downloaded_videos.length > 0) {
+                const videos = channel.downloaded_videos;
+                
+                // Sort by download date (newest first)
+                videos.sort((a, b) => new Date(b.download_date) - new Date(a.download_date));
+                
+                document.getElementById('channelVideosCount').textContent = 
+                    `Total: ${videos.length} video${videos.length !== 1 ? 's' : ''}`;
+                
+                document.getElementById('channelVideosList').innerHTML = videos.map((video, idx) => `
+                    <div class="d-flex justify-content-between align-items-center border-bottom py-2 ${idx % 2 === 0 ? 'bg-dark bg-opacity-25' : ''}">
+                        <div style="flex-grow: 1;">
+                            <div class="mb-1">
+                                <strong>${video.title || video.id}</strong>
+                                ${video.title ? `<br><small class="text-muted font-monospace">${video.id}</small>` : ''}
+                            </div>
+                            <small class="text-muted">
+                                <i class="bi bi-calendar"></i> Downloaded: ${formatDate(video.download_date)}
+                            </small>
+                        </div>
+                        <div>
+                            <a href="https://www.youtube.com/watch?v=${video.id}" target="_blank" class="btn btn-sm btn-outline-primary me-2">
+                                <i class="bi bi-youtube"></i> Watch
+                            </a>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                document.getElementById('channelVideosCount').textContent = '';
+                document.getElementById('channelVideosList').innerHTML = 
+                    '<p class="text-muted text-center">No videos downloaded yet for this channel</p>';
+            }
+        } else {
+            throw new Error('Failed to fetch channel data');
+        }
+    } catch (error) {
+        console.error('Error loading channel videos:', error);
+        document.getElementById('channelVideosCount').textContent = '';
+        document.getElementById('channelVideosList').innerHTML = 
+            '<p class="text-danger text-center">Failed to load videos</p>';
     }
 }
 
