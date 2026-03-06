@@ -295,6 +295,33 @@ When you press Ctrl+C or send a termination signal:
 3. Once all downloads finish, service exits cleanly
 4. If downloads take longer than 5 minutes, forces exit
 
+## Testing
+
+The project includes comprehensive unit tests covering utility functions, storage operations, configuration management, and skip detection logic.
+
+### Running Tests
+
+```bash
+# Run all tests
+go test ./...
+
+# Run with verbose output
+go test -v ./...
+
+# Run specific tests
+go test -v -run TestSanitizeFilename
+
+# Run with coverage report
+go test ./... -cover
+
+# Generate detailed coverage report
+go test ./... -coverprofile=coverage.out
+go tool cover -func=coverage.out
+
+# View coverage in browser
+go tool cover -html=coverage.out
+```
+
 ## License
 
 MIT License

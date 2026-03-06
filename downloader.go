@@ -32,6 +32,13 @@ type Downloader struct {
 	config *Config
 }
 
+// DownloadResult captures the outcome of a download attempt.
+type DownloadResult struct {
+	Downloaded bool
+	Skipped    bool
+	SkipReason string
+}
+
 // NewDownloader creates a new Downloader instance
 func NewDownloader(config *Config) *Downloader {
 	return &Downloader{config: config}
@@ -209,12 +216,16 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 	return fmt.Sprintf("bestvideo[height<=%s][ext=%s]+bestaudio[ext=%s]/bestvideo[height<=%s]+bestaudio/best", quality, format, format, quality)
 }
 
-// DownloadVideo downloads a video to the specified directory
-func (d *Downloader) DownloadVideo(videoURL, channelName, quality, format string, downloadShorts bool) error {
+// DownloadVideo downloads a video to the specified directory.
+// expectedVideoID should be provided when known so we can reliably detect whether
+// a file was actually created. If empty, metadata ID is used when available.
+func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool) (*DownloadResult, error) {
+	result := &DownloadResult{}
+
 	// Create channel subdirectory
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %v", err)
+		return result, fmt.Errorf("failed to create directory: %v", err)
 	}
 
 	log.Printf("Downloading video: %s to %s (quality: %s, format: %s, downloadShorts: %v)", videoURL, channelDir, quality, format, downloadShorts)
@@ -224,6 +235,16 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality, format string
 	if err != nil {
 		log.Printf("Warning: could not fetch metadata for %s: %v", videoURL, err)
 		metadata = nil // Continue with download even if metadata fails
+	}
+
+	videoID := strings.TrimSpace(expectedVideoID)
+	if videoID == "" && metadata != nil {
+		videoID = strings.TrimSpace(metadata.ID)
+	}
+
+	beforeCount := -1
+	if videoID != "" {
+		beforeCount = d.countVideoFiles(channelDir, videoID)
 	}
 
 	// Build format string based on desired quality and format
@@ -254,10 +275,33 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality, format string
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("yt-dlp download failed: %v, stderr: %s", err, stderr.String())
+		errOutput := strings.TrimSpace(stderr.String())
+		if isSkippableYtDlpOutput(errOutput) {
+			reason := extractSkipReason(errOutput)
+			result.Skipped = true
+			result.SkipReason = reason
+			log.Printf("Skipped video %s: %s", videoURL, reason)
+			return result, nil
+		}
+		return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", err, errOutput)
+	}
+
+	if videoID != "" {
+		afterCount := d.countVideoFiles(channelDir, videoID)
+		if beforeCount >= 0 && afterCount <= beforeCount {
+			reason := extractSkipReason(strings.TrimSpace(stderr.String()))
+			if reason == "" {
+				reason = "no downloadable file was produced"
+			}
+			result.Skipped = true
+			result.SkipReason = reason
+			log.Printf("Skipped video %s (%s): %s", videoURL, videoID, reason)
+			return result, nil
+		}
 	}
 
 	log.Printf("Successfully downloaded video: %s", videoURL)
+	result.Downloaded = true
 
 	// Generate NFO file if metadata was available
 	if metadata != nil {
@@ -266,7 +310,86 @@ func (d *Downloader) DownloadVideo(videoURL, channelName, quality, format string
 		}
 	}
 
-	return nil
+	return result, nil
+}
+
+func (d *Downloader) countVideoFiles(channelDir, videoID string) int {
+	if videoID == "" {
+		return 0
+	}
+
+	entries, err := os.ReadDir(channelDir)
+	if err != nil {
+		return 0
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.Contains(name, videoID) && !strings.HasSuffix(strings.ToLower(name), ".nfo") {
+			count++
+		}
+	}
+
+	return count
+}
+
+func isSkippableYtDlpOutput(output string) bool {
+	if output == "" {
+		return false
+	}
+
+	lower := strings.ToLower(output)
+	skippableSignals := []string{
+		"does not pass filter",
+		"video unavailable",
+		"this video is unavailable",
+		"private video",
+		"members-only",
+		"requested format is not available",
+		"no video formats found",
+	}
+
+	for _, sig := range skippableSignals {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func extractSkipReason(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return "filtered out or unavailable"
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "does not pass filter") ||
+			strings.Contains(lower, "unavailable") ||
+			strings.Contains(lower, "private") ||
+			strings.Contains(lower, "members-only") ||
+			strings.Contains(lower, "no video formats") ||
+			strings.Contains(lower, "requested format") {
+			return line
+		}
+	}
+
+	if len(lines) > 0 {
+		return strings.TrimSpace(lines[len(lines)-1])
+	}
+
+	return "filtered out or unavailable"
 }
 
 // CleanOldVideosForChannel removes videos older than the retention period for a specific channel
