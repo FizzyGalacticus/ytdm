@@ -172,7 +172,8 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	}
 
 	downloadCount := 0
-	skippedCount := 0
+	skippedAlreadyDownloadedCount := 0
+	skippedByDownloaderCount := 0
 
 	// Download each video that hasn't been downloaded yet
 	for _, video := range videos {
@@ -186,14 +187,19 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 
 		// Skip if already downloaded
 		if storage.IsVideoDownloaded(channel.ID, video.ID) {
-			skippedCount++
+			skippedAlreadyDownloadedCount++
+			log.Printf("Skipping video %s (%s): already marked as downloaded", video.Title, video.ID)
 			continue
 		}
 
 		// Download the video
-		if err := downloader.DownloadVideo(video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts); err != nil {
+		result, err := downloader.DownloadVideo(video.ID, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
+		if err != nil {
 			log.Printf("Failed to download video %s: %v", video.Title, err)
 			// Continue with other videos even if one fails
+		} else if result != nil && result.Skipped {
+			skippedByDownloaderCount++
+			log.Printf("Skipped video %s (%s): %s", video.Title, video.ID, result.SkipReason)
 		} else {
 			// Mark as downloaded
 			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID); err != nil {
@@ -203,7 +209,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}
 
-	log.Printf("Channel %s: downloaded %d new videos, skipped %d already downloaded", channel.Name, downloadCount, skippedCount)
+	log.Printf("Channel %s: downloaded %d new videos, skipped %d already downloaded, skipped %d by filters/unavailable", channel.Name, downloadCount, skippedAlreadyDownloadedCount, skippedByDownloaderCount)
 
 	// Update last checked time
 	if err := storage.UpdateChannelLastChecked(channel.ID, time.Now()); err != nil {
@@ -245,10 +251,19 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		channelName = "unknown"
 	}
 
-	if err := downloader.DownloadVideo(video.URL, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts); err != nil {
+	result, err := downloader.DownloadVideo(video.URL, info.ID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
+	if err != nil {
 		log.Printf("Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval
 		return err
+	}
+
+	if result != nil && result.Skipped {
+		log.Printf("Skipping video %s (%s): %s", video.Title, info.ID, result.SkipReason)
+		if err := storage.UpdateVideoLastChecked(video.ID, time.Now()); err != nil {
+			log.Printf("Failed to update video last checked time: %v", err)
+		}
+		return nil
 	}
 
 	// Mark as downloaded

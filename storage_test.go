@@ -213,3 +213,377 @@ func TestStoragePersistence(t *testing.T) {
 	// Cleanup
 	os.Remove(tmpFile)
 }
+
+func TestStorageGetVideoDownloadDate(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add channel
+	channel := Channel{
+		ID:   "test-channel",
+		Name: "Test Channel",
+		URL:  "https://youtube.com/@test",
+	}
+	storage.AddChannel(channel)
+
+	videoID := "test-video-123"
+
+	// Initially should return zero time
+	downloadDate := storage.GetVideoDownloadDate(channel.ID, videoID)
+	if !downloadDate.IsZero() {
+		t.Error("Expected zero time for video not downloaded")
+	}
+
+	// Mark as downloaded
+	storage.MarkVideoAsDownloaded(channel.ID, videoID)
+
+	// Should now return non-zero time
+	downloadDate = storage.GetVideoDownloadDate(channel.ID, videoID)
+	if downloadDate.IsZero() {
+		t.Error("Expected non-zero time after marking video as downloaded")
+	}
+
+	// Should be recent
+	if time.Since(downloadDate) > time.Minute {
+		t.Error("Download date should be recent")
+	}
+}
+
+func TestStorageRemoveDownloadedVideo(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add channel
+	channel := Channel{
+		ID:   "test-channel",
+		Name: "Test Channel",
+		URL:  "https://youtube.com/@test",
+	}
+	storage.AddChannel(channel)
+
+	videoID := "test-video-456"
+
+	// Mark video as downloaded
+	storage.MarkVideoAsDownloaded(channel.ID, videoID)
+	if !storage.IsVideoDownloaded(channel.ID, videoID) {
+		t.Fatal("Video should be marked as downloaded")
+	}
+
+	// Remove the downloaded video
+	err = storage.RemoveDownloadedVideo(channel.ID, videoID)
+	if err != nil {
+		t.Errorf("Failed to remove downloaded video: %v", err)
+	}
+
+	// Should no longer be marked as downloaded
+	if storage.IsVideoDownloaded(channel.ID, videoID) {
+		t.Error("Video should not be marked as downloaded after removal")
+	}
+}
+
+func TestStorageUpdateChannel(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add channel
+	channel := Channel{
+		ID:            "test-channel",
+		Name:          "Test Channel",
+		URL:           "https://youtube.com/@test",
+		RetentionDays: 7,
+		VideoQuality:  "720",
+		VideoFormat:   "mp4",
+	}
+	storage.AddChannel(channel)
+
+	// Update channel settings
+	newRetention := 14
+	newCutoff := time.Now().AddDate(0, 0, -14)
+	newQuality := "1080"
+	newFormat := "webm"
+	newShorts := true
+
+	err = storage.UpdateChannel(channel.ID, newRetention, newCutoff, newQuality, newFormat, newShorts)
+	if err != nil {
+		t.Errorf("Failed to update channel: %v", err)
+	}
+
+	// Verify updates
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Fatal("Expected channel to exist")
+	}
+
+	updated := channels[0]
+	if updated.RetentionDays != newRetention {
+		t.Errorf("Expected retention days %d, got %d", newRetention, updated.RetentionDays)
+	}
+	if updated.VideoQuality != newQuality {
+		t.Errorf("Expected quality %s, got %s", newQuality, updated.VideoQuality)
+	}
+	if updated.VideoFormat != newFormat {
+		t.Errorf("Expected format %s, got %s", newFormat, updated.VideoFormat)
+	}
+	if updated.DownloadShorts != newShorts {
+		t.Errorf("Expected shorts %v, got %v", newShorts, updated.DownloadShorts)
+	}
+}
+
+func TestStorageUpdateVideoLastChecked(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add video
+	video := Video{
+		ID:    "test-video",
+		Title: "Test Video",
+		URL:   "https://youtube.com/watch?v=test",
+	}
+	storage.AddVideo(video)
+
+	// Update last checked time
+	checkTime := time.Now()
+	err = storage.UpdateVideoLastChecked(video.ID, checkTime)
+	if err != nil {
+		t.Errorf("Failed to update video last checked: %v", err)
+	}
+
+	// Verify update
+	videos := storage.GetVideos()
+	if len(videos) != 1 {
+		t.Fatal("Expected video to exist")
+	}
+
+	if videos[0].LastChecked.IsZero() {
+		t.Error("Last checked time should not be zero")
+	}
+}
+
+func TestStorageConcurrency(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add a channel
+	channel := Channel{
+		ID:   "concurrent-test",
+		Name: "Concurrent Test",
+		URL:  "https://youtube.com/@concurrent",
+	}
+	storage.AddChannel(channel)
+
+	// Simulate concurrent reads and writes
+	done := make(chan bool, 10)
+
+	// 5 readers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				_ = storage.GetChannels()
+			}
+			done <- true
+		}()
+	}
+
+	// 5 writers
+	for i := 0; i < 5; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				videoID := "video-" + string(rune('0'+id))
+				storage.MarkVideoAsDownloaded(channel.ID, videoID)
+				storage.IsVideoDownloaded(channel.ID, videoID)
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	// Verify storage is still consistent
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Errorf("Expected 1 channel after concurrent operations, got %d", len(channels))
+	}
+}
+
+func TestStorageVideoErrorTracking(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add video
+	video := Video{
+		ID:    "test-video",
+		Title: "Test Video",
+		URL:   "https://youtube.com/watch?v=test",
+	}
+	storage.AddVideo(video)
+
+	// Set error
+	errorMsg := "Download failed: network timeout"
+	storage.SetVideoError(video.ID, errorMsg)
+
+	// Check error was set
+	videos := storage.GetVideos()
+	if len(videos) == 0 {
+		t.Fatal("Expected video to exist")
+	}
+
+	if videos[0].LastError != errorMsg {
+		t.Errorf("Expected error '%s', got '%s'", errorMsg, videos[0].LastError)
+	}
+
+	if videos[0].LastErrorTime.IsZero() {
+		t.Error("Error time should be set")
+	}
+
+	// Clear error
+	storage.ClearVideoError(video.ID)
+
+	videos = storage.GetVideos()
+	if videos[0].LastError != "" {
+		t.Errorf("Expected error to be cleared, got '%s'", videos[0].LastError)
+	}
+}
+
+func TestStorageEdgeCases(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	t.Run("update non-existent channel returns no error", func(t *testing.T) {
+		err := storage.UpdateChannelLastChecked("non-existent", time.Now())
+		if err != nil {
+			t.Errorf("Expected no error when updating non-existent channel, got: %v", err)
+		}
+	})
+
+	t.Run("remove non-existent channel returns no error", func(t *testing.T) {
+		err := storage.RemoveChannel("non-existent")
+		if err != nil {
+			t.Errorf("Expected no error when removing non-existent channel, got: %v", err)
+		}
+	})
+
+	t.Run("update non-existent video returns no error", func(t *testing.T) {
+		err := storage.UpdateVideoLastChecked("non-existent", time.Now())
+		if err != nil {
+			t.Errorf("Expected no error when updating non-existent video, got: %v", err)
+		}
+	})
+
+	t.Run("remove non-existent video returns no error", func(t *testing.T) {
+		err := storage.RemoveVideo("non-existent")
+		if err != nil {
+			t.Errorf("Expected no error when removing non-existent video, got: %v", err)
+		}
+	})
+
+	t.Run("mark video downloaded for non-existent channel returns no error", func(t *testing.T) {
+		err := storage.MarkVideoAsDownloaded("non-existent-channel", "video-id")
+		if err != nil {
+			t.Errorf("Expected no error when marking video downloaded for non-existent channel, got: %v", err)
+		}
+	})
+
+	t.Run("check video downloaded for non-existent channel", func(t *testing.T) {
+		isDownloaded := storage.IsVideoDownloaded("non-existent-channel", "video-id")
+		if isDownloaded {
+			t.Error("Expected false for non-existent channel")
+		}
+	})
+
+	t.Run("duplicate channel addition allowed", func(t *testing.T) {
+		channel := Channel{
+			ID:   "duplicate-test",
+			Name: "Duplicate Test",
+			URL:  "https://youtube.com/@duplicate",
+		}
+
+		err := storage.AddChannel(channel)
+		if err != nil {
+			t.Errorf("First add failed: %v", err)
+		}
+
+		// Add again with same ID - should succeed (no duplicate checking)
+		channel2 := channel
+		channel2.Name = "Different Name"
+		err = storage.AddChannel(channel2)
+		if err != nil {
+			t.Errorf("Second add failed: %v", err)
+		}
+
+		// Should have 2 channels with same ID
+		channels := storage.GetChannels()
+		count := 0
+		for _, ch := range channels {
+			if ch.ID == "duplicate-test" {
+				count++
+			}
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 channels with same ID, got %d", count)
+		}
+	})
+
+	t.Run("duplicate video addition allowed", func(t *testing.T) {
+		video := Video{
+			ID:    "duplicate-video",
+			Title: "Duplicate Video",
+			URL:   "https://youtube.com/watch?v=dup",
+		}
+
+		err := storage.AddVideo(video)
+		if err != nil {
+			t.Errorf("First add failed: %v", err)
+		}
+
+		// Add again with same ID - should succeed (no duplicate checking)
+		video2 := video
+		video2.Title = "Different Title"
+		err = storage.AddVideo(video2)
+		if err != nil {
+			t.Errorf("Second add failed: %v", err)
+		}
+
+		// Should have 2 videos with same ID
+		videos := storage.GetVideos()
+		count := 0
+		for _, vid := range videos {
+			if vid.ID == "duplicate-video" {
+				count++
+			}
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 videos with same ID, got %d", count)
+		}
+	})
+}
