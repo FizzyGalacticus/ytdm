@@ -29,7 +29,7 @@ mkdir -p ./data
 
 echo ""
 echo "Building application..."
-go build -o media_downloader
+go build -o ytdm
 
 echo ""
 echo "Starting Media Downloader..."
@@ -37,4 +37,4 @@ echo "Web interface: http://localhost:8080"
 echo "Press Ctrl+C to stop"
 echo ""
 
-./media_downloader
+./ytdm
