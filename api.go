@@ -236,6 +236,20 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 		video.ID = extractIDFromURL(video.URL)
 	}
 
+	// Fetch video title from yt-dlp if not provided
+	if video.Title == "" {
+		downloader := NewDownloader(api.config)
+		info, err := downloader.GetVideoInfo(video.URL)
+		if err != nil {
+			api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Failed to fetch video info: %v", err))
+			return
+		}
+		video.Title = info.Title
+		if video.ID == "" || video.ID == extractIDFromURL(video.URL) {
+			video.ID = info.ID // Use the more reliable ID from yt-dlp
+		}
+	}
+
 	// Use default retention if not specified
 	if video.RetentionDays == 0 {
 		video.RetentionDays = api.config.RetentionDays

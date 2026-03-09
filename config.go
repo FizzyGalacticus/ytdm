@@ -38,7 +38,7 @@ func DefaultConfig() *Config {
 		CheckInterval:      "5m0s",
 		RetentionDays:      7,
 		DownloadDir:        "/downloads",
-		FileNamePattern:    "%(title)s-%(id)s.%(ext)s",
+		FileNamePattern:    "%(upload_date>%Y-%m-%d)s %(title)s-%(id)s.%(ext)s",
 		APIPort:            8080,
 		MaxConcurrent:      3,
 		DefaultVideoFormat: "mp4",
