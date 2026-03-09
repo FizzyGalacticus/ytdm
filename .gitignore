@@ -1,5 +1,5 @@
 # Binary and build artifacts
-media_downloader
+ytdm
 *.o
 *.a
 *.so

@@ -1,5 +1,8 @@
 # YouTube Media Downloader
 
+[![Tests](https://github.com/FizzyGalacticus/ytdm/actions/workflows/test-and-publish.yml/badge.svg)](https://github.com/FizzyGalacticus/ytdm/actions/workflows/test-and-publish.yml)
+[![Coverage](https://codecov.io/gh/FizzyGalacticus/ytdm/branch/master/graph/badge.svg)](https://codecov.io/gh/FizzyGalacticus/ytdm)
+
 Automated YouTube video downloader with channel monitoring, retention management, and a web interface.
 
 ## Features
@@ -40,8 +43,8 @@ Access the web UI at `http://localhost:8080`
 ./run-local.sh
 
 # Or manually
-go build -o media_downloader
-./media_downloader
+go build -o ytdm
+./ytdm
 ```
 
 ## Configuration
@@ -136,7 +139,7 @@ Example format:
 ## Directory Structure
 
 ```
-media_downloader/
+ytdm/
 ├── data/
 │   ├── config.json      # Application configuration
 │   ├── data.json        # Channel/video state
@@ -238,7 +241,7 @@ docker build -t media-downloader:slim --no-cache .
 ## Directory Structure
 
 ```
-media_downloader/
+ytdm/
 ├── main.go              # Entry point
 ├── config.go            # Configuration management
 ├── storage.go           # Persistent data storage

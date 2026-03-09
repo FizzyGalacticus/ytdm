@@ -8,7 +8,7 @@ COPY *.go go.mod ./
 COPY static ./static
 
 # Build static binary with embedded files
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static" -s -w' -o media_downloader .
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static" -s -w' -o ytdm .
 
 # Runtime stage - use minimal alpine
 FROM alpine:3.19
@@ -38,7 +38,7 @@ RUN mkdir -p /app && \
 WORKDIR /app
 
 # Copy binary from build stage
-COPY --from=builder /build/media_downloader .
+COPY --from=builder /build/ytdm .
 
 # Switch to non-root user
 USER downloader
@@ -54,4 +54,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/api/status || exit 1
 
 # Run the application
-CMD ["./media_downloader"]
+CMD ["./ytdm"]
