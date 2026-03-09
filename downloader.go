@@ -208,12 +208,14 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 	}
 
 	if quality == "" || quality == "best" {
-		// Default: best video+audio in specified format, fallback to any format
-		return fmt.Sprintf("bestvideo[ext=%s]+bestaudio/best[ext=%s]/bestvideo+bestaudio/best", format, format)
+		// Prefer video in specified format, but don't filter audio by extension
+		// Audio streams may not be available in the target container format
+		return fmt.Sprintf("bestvideo[ext=%s]+bestaudio/bestvideo+bestaudio/best", format)
 	}
 
-	// For specific quality heights, select best video up to that height in specified format
-	return fmt.Sprintf("bestvideo[height<=%s][ext=%s]+bestaudio[ext=%s]/bestvideo[height<=%s]+bestaudio/best", quality, format, format, quality)
+	// For specific quality heights, prefer video in specified format with any audio
+	// The merge-output-format option will handle container conversion
+	return fmt.Sprintf("bestvideo[height<=%s][ext=%s]+bestaudio/bestvideo[height<=%s]+bestaudio/best", quality, format, quality)
 }
 
 // DownloadVideo downloads a video to the specified directory.
@@ -266,6 +268,7 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		"-o", filepath.Join(channelDir, d.config.FileNamePattern),
 		"--no-playlist",
 		"-f", formatStr,
+		"--merge-output-format", format, // Ensure final output is in desired container format
 		"--match-filters", matchFilter,
 		"--embed-chapters",
 		videoURL,
@@ -444,7 +447,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	}
 
 	// Then, delete old files from disk
-	return filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
 		}
@@ -487,6 +490,19 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 		return nil
 	})
+
+	// After cleanup, check if directory is empty and remove it
+	if err == nil {
+		entries, readErr := os.ReadDir(channelDir)
+		if readErr == nil && len(entries) == 0 {
+			log.Printf("Removing empty channel directory: %s", channelDir)
+			if rmErr := os.Remove(channelDir); rmErr != nil {
+				log.Printf("Failed to remove empty directory %s: %v", channelDir, rmErr)
+			}
+		}
+	}
+
+	return err
 }
 
 // CleanOldVideosForVideo removes videos older than the retention period for a specific individual video entry
@@ -550,7 +566,7 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 	}
 
 	// Then, delete old files from disk
-	return filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
 		}
@@ -583,13 +599,26 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 
 		if timeToCheck.Before(cutoffTime) {
 			log.Printf("Removing old video: %s (download date: %s)", path, timeToCheck)
-			if err := os.Remove(path); err != nil {
-				log.Printf("Failed to remove %s: %v", path, err)
+			if removeErr := os.Remove(path); removeErr != nil {
+				log.Printf("Failed to remove %s: %v", path, removeErr)
+			} else {
+				// Check if parent directory is now empty and remove it
+				parentDir := filepath.Dir(path)
+				if parentDir != d.config.DownloadDir {
+					if entries, readErr := os.ReadDir(parentDir); readErr == nil && len(entries) == 0 {
+						log.Printf("Removing empty directory: %s", parentDir)
+						if rmErr := os.Remove(parentDir); rmErr != nil {
+							log.Printf("Failed to remove empty directory %s: %v", parentDir, rmErr)
+						}
+					}
+				}
 			}
 		}
 
 		return nil
 	})
+
+	return err
 }
 func (d *Downloader) CleanOldVideos() error {
 	log.Printf("Cleaning old videos (retention: %d days)", d.config.RetentionDays)
@@ -623,13 +652,29 @@ func (d *Downloader) CleanOldVideos() error {
 }
 
 // sanitizeFilename removes or replaces characters that are invalid in filenames
+// Handles characters that are problematic on Windows, Linux, macOS, and network filesystems
 func sanitizeFilename(name string) string {
 	// Replace invalid characters with underscores
-	invalid := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
+	invalid := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\x00"}
 	result := name
 	for _, char := range invalid {
 		result = strings.ReplaceAll(result, char, "_")
 	}
+
+	// Remove control characters (ASCII 0-31 and 127)
+	for i := 0; i < 32; i++ {
+		result = strings.ReplaceAll(result, string(rune(i)), "")
+	}
+	result = strings.ReplaceAll(result, string(rune(127)), "")
+
+	// Trim leading/trailing whitespace and dots (problematic on Windows)
+	result = strings.Trim(result, " .")
+
+	// Ensure we don't end up with an empty string
+	if result == "" {
+		result = "unnamed"
+	}
+
 	return result
 }
 

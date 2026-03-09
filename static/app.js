@@ -539,7 +539,6 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
 // Add video
 document.getElementById('addVideoForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const title = document.getElementById('videoTitle').value;
     const url = document.getElementById('videoURL').value;
     const retention = parseInt(document.getElementById('videoRetention').value) || 0;
     const quality = document.getElementById('videoQuality').value;
@@ -550,7 +549,7 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
         const response = await fetch(`${API_BASE}/videos`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title, url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts })
+            body: JSON.stringify({ url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts })
         });
         const data = await response.json();
         if (data.success) {
