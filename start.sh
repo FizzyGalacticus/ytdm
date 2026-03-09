@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-echo "Building media-downloader..."
+echo "Building ytdm..."
 docker-compose build
 
 echo ""
-echo "Starting media-downloader service..."
+echo "Starting ytdm service..."
 docker-compose up -d
 
 echo ""
