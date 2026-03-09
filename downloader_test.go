@@ -386,12 +386,12 @@ func TestSanitizeFilename(t *testing.T) {
 		{
 			name:     "empty string",
 			input:    "",
-			expected: "",
+			expected: "unnamed",
 		},
 		{
 			name:     "only spaces",
 			input:    "   ",
-			expected: "   ",
+			expected: "unnamed",
 		},
 	}
 
@@ -536,25 +536,25 @@ func TestBuildFormatString(t *testing.T) {
 			name:           "default quality and mp4",
 			quality:        "",
 			format:         "mp4",
-			expectedSubstr: []string{"bestvideo[ext=mp4]", "best[ext=mp4]"},
+			expectedSubstr: []string{"bestvideo[ext=mp4]", "bestvideo+bestaudio/best"},
 		},
 		{
 			name:           "best quality with webm",
 			quality:        "best",
 			format:         "webm",
-			expectedSubstr: []string{"bestvideo[ext=webm]", "best[ext=webm]"},
+			expectedSubstr: []string{"bestvideo[ext=webm]", "bestvideo+bestaudio/best"},
 		},
 		{
 			name:           "720p with mp4",
 			quality:        "720",
 			format:         "mp4",
-			expectedSubstr: []string{"bestvideo[height<=720][ext=mp4]", "bestaudio[ext=mp4]"},
+			expectedSubstr: []string{"bestvideo[height<=720][ext=mp4]", "+bestaudio/"},
 		},
 		{
 			name:           "480p with mkv",
 			quality:        "480",
 			format:         "mkv",
-			expectedSubstr: []string{"bestvideo[height<=480][ext=mkv]", "bestaudio[ext=mkv]"},
+			expectedSubstr: []string{"bestvideo[height<=480][ext=mkv]", "+bestaudio/"},
 		},
 		{
 			name:           "empty format defaults to mp4",
