@@ -51,6 +51,7 @@ Thumbs.db
 test-*.sh
 convert-*.py
 check-*.sh
+coverage.out
 
 # Cookie/config extraction files
 cookies.json

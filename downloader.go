@@ -264,15 +264,26 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	}
 
 	// Build yt-dlp command for download
-	cmd := d.buildYtDlpCommand(
+	cmdArgs := []string{
 		"-o", filepath.Join(channelDir, d.config.FileNamePattern),
 		"--no-playlist",
 		"-f", formatStr,
-		"--merge-output-format", format, // Ensure final output is in desired container format
+	}
+
+	// Only add merge-output-format if a format was specified
+	normalizedFormat := strings.TrimSpace(format)
+	if normalizedFormat == "" {
+		normalizedFormat = "mp4"
+	}
+	cmdArgs = append(cmdArgs, "--merge-output-format", normalizedFormat)
+
+	cmdArgs = append(cmdArgs,
 		"--match-filters", matchFilter,
 		"--embed-chapters",
 		videoURL,
 	)
+
+	cmd := d.buildYtDlpCommand(cmdArgs...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
