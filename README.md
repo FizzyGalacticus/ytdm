@@ -25,11 +25,11 @@ Automated YouTube video downloader with channel monitoring, retention management
 docker-compose up -d
 
 # Or manually
-docker build -t media-downloader .
+docker build -t ytdm .
 docker run -d -p 8080:8080 \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/downloads:/app/downloads \
-  media-downloader
+  ytdm
 ```
 
 Access the web UI at `http://localhost:8080`
@@ -190,7 +190,7 @@ Built with Go 1.21 using only the standard library (yt-dlp runs as subprocess).
 
 **ffmpeg** updates require rebuilding the Docker image:
 ```bash
-docker build -t media-downloader:slim --no-cache .
+docker build -t ytdm:latest --no-cache .
 ```
 
 ## API Endpoints
