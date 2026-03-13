@@ -472,10 +472,12 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := map[string]interface{}{
-		"channels_count": len(api.storage.GetChannels()),
-		"videos_count":   len(api.storage.GetVideos()),
-		"uptime":         time.Now().Format(time.RFC3339),
-		"yt_dlp_version": getYtDlpVersion(api.config.YtDlp.Path),
+		"channels_count":   len(api.storage.GetChannels()),
+		"videos_count":     len(api.storage.GetVideos()),
+		"uptime":           time.Now().Format(time.RFC3339),
+		"yt_dlp_version":   getYtDlpVersion(api.config.YtDlp.Path),
+		"app_commit":       getAppCommit(),
+		"app_commit_short": getShortAppCommit(),
 	}
 	api.sendSuccess(w, status)
 }

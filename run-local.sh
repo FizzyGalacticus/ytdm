@@ -29,7 +29,8 @@ mkdir -p ./data
 
 echo ""
 echo "Building application..."
-go build -o ytdm
+GIT_COMMIT=$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev)
+go build -ldflags "-X main.gitCommit=${GIT_COMMIT}" -o ytdm
 
 echo ""
 echo "Starting Media Downloader..."

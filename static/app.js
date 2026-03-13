@@ -68,11 +68,13 @@ async function loadStatus() {
         const data = await response.json();
         if (data.success) {
             const versionText = data.data.yt_dlp_version ? data.data.yt_dlp_version : 'unknown';
+            const appCommit = data.data.app_commit_short ? data.data.app_commit_short : (data.data.app_commit || 'unknown');
             document.getElementById('status').innerHTML = `
                 <span class="badge bg-success">Running</span>
                 <span class="ms-3"><strong>Channels:</strong> ${data.data.channels_count}</span>
                 <span class="ms-3"><strong>Videos:</strong> ${data.data.videos_count}</span>
                 <span class="ms-3"><strong>yt-dlp:</strong> ${versionText}</span>
+                <span class="ms-3"><strong>Commit:</strong> ${appCommit}</span>
             `;
         }
     } catch (error) {

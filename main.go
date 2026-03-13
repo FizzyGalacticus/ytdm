@@ -16,6 +16,7 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetOutput(io.MultiWriter(os.Stdout, logBuffer))
 	log.Println("Starting YouTube Media Downloader")
+	log.Printf("App commit: %s", getAppCommit())
 
 	// Load configuration
 	config, err := LoadConfig("data/config.json")
