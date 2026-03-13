@@ -8,7 +8,8 @@ COPY *.go go.mod ./
 COPY static ./static
 
 # Build static binary with embedded files
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static" -s -w' -o ytdm .
+ARG GIT_COMMIT=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-extldflags '-static' -s -w -X main.gitCommit=${GIT_COMMIT}" -o ytdm .
 
 # Runtime stage - use minimal alpine
 FROM alpine:3.19

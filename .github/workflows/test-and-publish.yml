@@ -51,3 +51,5 @@ jobs:
         context: .
         push: true
         tags: ${{ steps.image.outputs.name }}:latest
+        build-args: |
+          GIT_COMMIT=${{ github.sha }}
