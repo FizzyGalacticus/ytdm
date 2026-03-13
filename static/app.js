@@ -621,7 +621,6 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
             restrict_filenames: document.getElementById('restrictFilenames').checked,
             cache_dir: document.getElementById('ytDlpCacheDir').value.trim(),
             cookies_browser: document.getElementById('cookiesBrowser').value,
-            cookies_file: "" // Set by cookie paste endpoint
         }
     };
 
