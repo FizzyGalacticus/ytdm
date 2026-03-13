@@ -156,6 +156,16 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader) error {
 	log.Printf("Processing channel: %s (retention: %d days)", channel.Name, channel.RetentionDays)
 
+	// Always update last checked time when we attempt to process (but not on shutdown)
+	defer func() {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := storage.UpdateChannelLastChecked(channel.ID, time.Now()); err != nil {
+			log.Printf("Failed to update channel last checked time: %v", err)
+		}
+	}()
+
 	// Determine the time window to check for videos
 	// Retention is based on download date, so don't filter by publish date unless a cutoff is set.
 	var since time.Time
@@ -211,11 +221,6 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 
 	log.Printf("Channel %s: downloaded %d new videos, skipped %d already downloaded, skipped %d by filters/unavailable", channel.Name, downloadCount, skippedAlreadyDownloadedCount, skippedByDownloaderCount)
 
-	// Update last checked time
-	if err := storage.UpdateChannelLastChecked(channel.ID, time.Now()); err != nil {
-		log.Printf("Failed to update channel last checked time: %v", err)
-	}
-
 	return nil
 }
 
@@ -230,6 +235,16 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		return nil // Return nil to not count as error
 	default:
 	}
+
+	// Always update last checked time when we attempt to process (but not on shutdown)
+	defer func() {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := storage.UpdateVideoLastChecked(video.ID, time.Now()); err != nil {
+			log.Printf("Failed to update video last checked time: %v", err)
+		}
+	}()
 
 	// Get video info to check if it needs downloading
 	info, err := downloader.GetVideoInfo(video.URL)
@@ -260,20 +275,12 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	if result != nil && result.Skipped {
 		log.Printf("Skipping video %s (%s): %s", video.Title, info.ID, result.SkipReason)
-		if err := storage.UpdateVideoLastChecked(video.ID, time.Now()); err != nil {
-			log.Printf("Failed to update video last checked time: %v", err)
-		}
 		return nil
 	}
 
 	// Mark as downloaded
 	if err := storage.MarkVideoAsDownloaded(video.ID, info.ID, info.Title); err != nil {
 		log.Printf("Failed to mark video as downloaded: %v", err)
-	}
-
-	// Update last checked time
-	if err := storage.UpdateVideoLastChecked(video.ID, time.Now()); err != nil {
-		log.Printf("Failed to update video last checked time: %v", err)
 	}
 
 	return nil
