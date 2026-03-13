@@ -457,7 +457,9 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 	}
 
-	// Then, delete old files from disk
+	trackedVideos := channelData.DownloadedVideos
+
+	// Then, delete old tracked files from disk
 	err := filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
@@ -469,31 +471,13 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 
 		baseName := filepath.Base(path)
-
-		// Find the video ID by checking all downloaded videos for this channel
-		var foundDownloadDate time.Time
-		fallbackToMtime := true
-
-		for _, vid := range channelData.DownloadedVideos {
-			// Check if the video ID appears in the filename
-			if strings.Contains(baseName, vid.ID) {
-				foundDownloadDate = vid.DownloadDate
-				fallbackToMtime = false
-				break
-			}
+		foundDownloadDate, tracked := findTrackedDownloadDate(baseName, trackedVideos)
+		if !tracked || foundDownloadDate.IsZero() {
+			return nil
 		}
 
-		// Check if file is older than cutoff
-		var timeToCheck time.Time
-		if !fallbackToMtime && !foundDownloadDate.IsZero() {
-			timeToCheck = foundDownloadDate
-		} else {
-			// Fallback to file modification time if we couldn't find in storage
-			timeToCheck = info.ModTime()
-		}
-
-		if timeToCheck.Before(cutoffTime) {
-			log.Printf("Removing old video: %s (download date: %s)", path, timeToCheck)
+		if foundDownloadDate.Before(cutoffTime) {
+			log.Printf("Removing old tracked video: %s (download date: %s)", path, foundDownloadDate)
 			if err := os.Remove(path); err != nil {
 				log.Printf("Failed to remove %s: %v", path, err)
 			}
@@ -576,7 +560,9 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 		}
 	}
 
-	// Then, delete old files from disk
+	trackedVideos := videoEntry.DownloadedVideos
+
+	// Then, delete old tracked files from disk
 	err := filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip files with errors
@@ -588,28 +574,13 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 		}
 
 		baseName := filepath.Base(path)
-
-		// Check if this file matches any of the downloaded videos for this entry
-		var foundDownloadDate time.Time
-		for _, vid := range videoEntry.DownloadedVideos {
-			// Check if the video ID appears in the filename
-			if strings.Contains(baseName, vid.ID) {
-				foundDownloadDate = vid.DownloadDate
-				break
-			}
+		foundDownloadDate, tracked := findTrackedDownloadDate(baseName, trackedVideos)
+		if !tracked || foundDownloadDate.IsZero() {
+			return nil
 		}
 
-		// Check if file is older than cutoff
-		var timeToCheck time.Time
-		if !foundDownloadDate.IsZero() {
-			timeToCheck = foundDownloadDate
-		} else {
-			// Fallback to file modification time if we couldn't find in storage
-			timeToCheck = info.ModTime()
-		}
-
-		if timeToCheck.Before(cutoffTime) {
-			log.Printf("Removing old video: %s (download date: %s)", path, timeToCheck)
+		if foundDownloadDate.Before(cutoffTime) {
+			log.Printf("Removing old tracked video: %s (download date: %s)", path, foundDownloadDate)
 			if removeErr := os.Remove(path); removeErr != nil {
 				log.Printf("Failed to remove %s: %v", path, removeErr)
 			} else {
@@ -631,35 +602,15 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 
 	return err
 }
-func (d *Downloader) CleanOldVideos() error {
-	log.Printf("Cleaning old videos (retention: %d days)", d.config.RetentionDays)
 
-	if d.config.RetentionDays <= 0 {
-		return nil
+func findTrackedDownloadDate(baseName string, videos []DownloadedVideo) (time.Time, bool) {
+	for _, vid := range videos {
+		if strings.Contains(baseName, vid.ID) {
+			return vid.DownloadDate, true
+		}
 	}
 
-	cutoffTime := time.Now().AddDate(0, 0, -d.config.RetentionDays)
-
-	return filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip files with errors
-		}
-
-		// Skip directories
-		if info.IsDir() {
-			return nil
-		}
-
-		// Check if file is older than cutoff
-		if info.ModTime().Before(cutoffTime) {
-			log.Printf("Removing old video: %s (modified: %s)", path, info.ModTime())
-			if err := os.Remove(path); err != nil {
-				log.Printf("Failed to remove %s: %v", path, err)
-			}
-		}
-
-		return nil
-	})
+	return time.Time{}, false
 }
 
 // sanitizeFilename removes or replaces characters that are invalid in filenames

@@ -287,25 +287,6 @@ func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 	return nil // Container not found
 }
 
-// GetVideoDownloadDate returns the download date for a video, or zero time if not found
-func (s *Storage) GetVideoDownloadDate(channelID, videoID string) time.Time {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, ch := range s.data.Channels {
-		if ch.ID == channelID {
-			for _, vid := range ch.DownloadedVideos {
-				if vid.ID == videoID {
-					return vid.DownloadDate
-				}
-			}
-			break
-		}
-	}
-
-	return time.Time{}
-}
-
 // GetVideos returns all videos
 func (s *Storage) GetVideos() []Video {
 	s.mu.RLock()
