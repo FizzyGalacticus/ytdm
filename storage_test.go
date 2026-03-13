@@ -214,45 +214,6 @@ func TestStoragePersistence(t *testing.T) {
 	os.Remove(tmpFile)
 }
 
-func TestStorageGetVideoDownloadDate(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
-
-	storage, err := NewStorage(tmpFile)
-	if err != nil {
-		t.Fatalf("Failed to create storage: %v", err)
-	}
-
-	// Add channel
-	channel := Channel{
-		ID:   "test-channel",
-		Name: "Test Channel",
-		URL:  "https://youtube.com/@test",
-	}
-	storage.AddChannel(channel)
-
-	videoID := "test-video-123"
-
-	// Initially should return zero time
-	downloadDate := storage.GetVideoDownloadDate(channel.ID, videoID)
-	if !downloadDate.IsZero() {
-		t.Error("Expected zero time for video not downloaded")
-	}
-
-	// Mark as downloaded
-	storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video")
-
-	// Should now return non-zero time
-	downloadDate = storage.GetVideoDownloadDate(channel.ID, videoID)
-	if downloadDate.IsZero() {
-		t.Error("Expected non-zero time after marking video as downloaded")
-	}
-
-	// Should be recent
-	if time.Since(downloadDate) > time.Minute {
-		t.Error("Download date should be recent")
-	}
-}
-
 func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
 

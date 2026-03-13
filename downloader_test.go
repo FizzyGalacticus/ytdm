@@ -801,3 +801,138 @@ func TestCountVideoFiles(t *testing.T) {
 		}
 	})
 }
+
+func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	channelName := "Tracked Channel"
+	channelDir := filepath.Join(tmpDir, sanitizeFilename(channelName))
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	trackedOld := filepath.Join(channelDir, "tracked-old-abc123.mp4")
+	untrackedOld := filepath.Join(channelDir, "someone-else-file.mp4")
+	trackedRecent := filepath.Join(channelDir, "tracked-recent-def456.mp4")
+
+	for _, file := range []string{trackedOld, untrackedOld, trackedRecent} {
+		if err := os.WriteFile(file, []byte("test"), 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", file, err)
+		}
+	}
+
+	now := time.Now()
+	oldTime := now.AddDate(0, 0, -10)
+	recentTime := now.AddDate(0, 0, -2)
+	if err := os.Chtimes(trackedOld, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(trackedOld) error = %v", err)
+	}
+	if err := os.Chtimes(untrackedOld, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(untrackedOld) error = %v", err)
+	}
+	if err := os.Chtimes(trackedRecent, recentTime, recentTime); err != nil {
+		t.Fatalf("Chtimes(trackedRecent) error = %v", err)
+	}
+
+	err = storage.AddChannel(Channel{
+		ID:   "channel-1",
+		Name: channelName,
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "abc123", Title: "Old tracked", DownloadDate: oldTime},
+			{ID: "def456", Title: "Recent tracked", DownloadDate: recentTime},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-1", 7, storage); err != nil {
+		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
+	}
+
+	if _, err := os.Stat(trackedOld); !os.IsNotExist(err) {
+		t.Fatalf("expected tracked old file to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(untrackedOld); err != nil {
+		t.Fatalf("expected untracked file to remain, stat err = %v", err)
+	}
+	if _, err := os.Stat(trackedRecent); err != nil {
+		t.Fatalf("expected recent tracked file to remain, stat err = %v", err)
+	}
+}
+
+func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	channelDir := filepath.Join(tmpDir, "Uploader")
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	trackedOld := filepath.Join(channelDir, "tracked-old-xyz123.mp4")
+	untrackedOld := filepath.Join(channelDir, "manual-file.mp4")
+	trackedRecent := filepath.Join(channelDir, "tracked-recent-uvw999.mp4")
+
+	for _, file := range []string{trackedOld, untrackedOld, trackedRecent} {
+		if err := os.WriteFile(file, []byte("test"), 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", file, err)
+		}
+	}
+
+	now := time.Now()
+	oldTime := now.AddDate(0, 0, -10)
+	recentTime := now.AddDate(0, 0, -1)
+	if err := os.Chtimes(trackedOld, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(trackedOld) error = %v", err)
+	}
+	if err := os.Chtimes(untrackedOld, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(untrackedOld) error = %v", err)
+	}
+	if err := os.Chtimes(trackedRecent, recentTime, recentTime); err != nil {
+		t.Fatalf("Chtimes(trackedRecent) error = %v", err)
+	}
+
+	err = storage.AddVideo(Video{
+		ID:    "video-entry-1",
+		Title: "Tracked video entry",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "xyz123", Title: "Old tracked", DownloadDate: oldTime},
+			{ID: "uvw999", Title: "Recent tracked", DownloadDate: recentTime},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
+
+	if err := downloader.CleanOldVideosForVideo("Tracked video entry", "video-entry-1", 7, storage); err != nil {
+		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
+	}
+
+	if _, err := os.Stat(trackedOld); !os.IsNotExist(err) {
+		t.Fatalf("expected tracked old file to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(untrackedOld); err != nil {
+		t.Fatalf("expected untracked file to remain, stat err = %v", err)
+	}
+	if _, err := os.Stat(trackedRecent); err != nil {
+		t.Fatalf("expected recent tracked file to remain, stat err = %v", err)
+	}
+}

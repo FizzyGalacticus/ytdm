@@ -17,34 +17,18 @@ FROM alpine:3.19
 RUN apk add --no-cache python3 py3-pip ffmpeg wget nodejs && \
     rm -rf /root/.cache
 
-# Create non-root user first
-RUN addgroup -g 1000 downloader && \
-    adduser -D -u 1000 -G downloader downloader
-
-# Install yt-dlp binary as the downloader user to allow self-updates
-USER downloader
-RUN mkdir -p /home/downloader/.local/bin && \
-    wget -q -O /home/downloader/.local/bin/yt-dlp \
+# Install yt-dlp binary
+RUN wget -q -O /usr/local/bin/yt-dlp \
       https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
-    chmod +x /home/downloader/.local/bin/yt-dlp
-
-# Switch back to root for directory setup
-USER root
+    chmod +x /usr/local/bin/yt-dlp
 
 # Create /app directory
-RUN mkdir -p /app && \
-    chown -R downloader:downloader /app
+RUN mkdir -p /app
 
 WORKDIR /app
 
 # Copy binary from build stage
 COPY --from=builder /build/ytdm .
-
-# Switch to non-root user
-USER downloader
-
-# Add user's pip bin to PATH for yt-dlp, and ensure deno is accessible
-ENV PATH="/home/downloader/.local/bin:/usr/bin:${PATH}"
 
 # Expose API port
 EXPOSE 8080

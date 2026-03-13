@@ -37,7 +37,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CheckInterval:      "5m0s",
 		RetentionDays:      7,
-		DownloadDir:        "/downloads",
+		DownloadDir:        "/app/downloads",
 		FileNamePattern:    "%(upload_date>%Y-%m-%d)s %(title)s-%(id)s.%(ext)s",
 		APIPort:            8080,
 		MaxConcurrent:      3,
@@ -108,6 +108,9 @@ func applyConfigDefaults(c *Config) {
 	}
 	if c.CheckInterval == "" {
 		c.CheckInterval = "5m0s"
+	}
+	if c.DownloadDir == "" {
+		c.DownloadDir = "/app/downloads"
 	}
 	if c.YtDlp.UpdateInterval == "" {
 		c.YtDlp.UpdateInterval = "24h0m0s"
