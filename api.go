@@ -132,9 +132,23 @@ func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate ID from URL if not provided
+	// Resolve canonical channel ID (UC...) so RSS lookups work for @handle URLs.
+	if channel.URL != "" {
+		downloader := NewDownloader(api.config)
+		resolvedID, err := downloader.ResolveChannelID(channel.URL)
+		if err == nil && resolvedID != "" {
+			channel.ID = resolvedID
+		} else if channel.ID == "" {
+			channel.ID = extractIDFromURL(channel.URL)
+			if err != nil {
+				log.Printf("Warning: failed to resolve canonical channel ID for %s, using fallback id %s: %v", channel.URL, channel.ID, err)
+			}
+		}
+	}
+
 	if channel.ID == "" {
-		channel.ID = extractIDFromURL(channel.URL)
+		api.sendError(w, http.StatusBadRequest, "Could not determine channel ID from URL")
+		return
 	}
 
 	// Use default retention if not specified
@@ -168,6 +182,23 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodDelete:
+		var target *Channel
+		for _, ch := range api.storage.GetChannels() {
+			if ch.ID == id {
+				c := ch
+				target = &c
+				break
+			}
+		}
+
+		if target != nil {
+			downloader := NewDownloader(api.config)
+			if err := downloader.RemoveChannelResources(*target); err != nil {
+				api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove channel resources: %v", err))
+				return
+			}
+		}
+
 		if err := api.storage.RemoveChannel(id); err != nil {
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove channel: %v", err))
 			return
@@ -286,6 +317,23 @@ func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodDelete:
+		var target *Video
+		for _, v := range api.storage.GetVideos() {
+			if v.ID == id {
+				vv := v
+				target = &vv
+				break
+			}
+		}
+
+		if target != nil {
+			downloader := NewDownloader(api.config)
+			if err := downloader.RemoveVideoResources(*target); err != nil {
+				api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove video resources: %v", err))
+				return
+			}
+		}
+
 		if err := api.storage.RemoveVideo(id); err != nil {
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove video: %v", err))
 			return

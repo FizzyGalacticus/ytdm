@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +22,19 @@ import (
 var jitterRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 var jitterMu sync.Mutex
 
+// RSSFeed represents a YouTube RSS feed structure
+type RSSFeed struct {
+	Entries []RSSEntry `xml:"entry"`
+}
+
+// RSSEntry represents a single video entry in an RSS feed
+type RSSEntry struct {
+	ID        string    `xml:"id"`
+	Title     string    `xml:"title"`
+	Published time.Time `xml:"published"`
+	VideoID   string    `xml:"http://www.youtube.com/xml/schemas/2015/metadata videoId"`
+}
+
 // VideoInfo represents metadata about a video
 type VideoInfo struct {
 	ID          string    `json:"id"`
@@ -24,6 +42,7 @@ type VideoInfo struct {
 	UploadDate  string    `json:"upload_date"`
 	Uploader    string    `json:"uploader"`
 	UploaderID  string    `json:"uploader_id"`
+	ChannelID   string    `json:"channel_id"`
 	PublishTime time.Time `json:"-"`
 }
 
@@ -162,6 +181,121 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 	return videos, nil
 }
 
+// GetChannelVideosFromRSS fetches recent videos from a channel using YouTube's public RSS feed
+// This is much faster than yt-dlp but may miss videos in edge cases
+// Returns VideoInfo for videos published after 'since' time
+func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time) ([]VideoInfo, error) {
+	log.Printf("Fetching video list from channel via RSS: %s", channelURL)
+
+	resolvedChannelID, err := resolveRSSChannelID(channelID, channelURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract channel ID: %v", err)
+	}
+
+	// Construct RSS feed URL
+	rssURL := fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?channel_id=%s", resolvedChannelID)
+
+	// Fetch RSS feed with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", rssURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch RSS feed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RSS feed returned status %d", resp.StatusCode)
+	}
+
+	// Parse RSS feed
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RSS response: %v", err)
+	}
+
+	var feed RSSFeed
+	if err := xml.Unmarshal(data, &feed); err != nil {
+		return nil, fmt.Errorf("failed to parse RSS feed: %v", err)
+	}
+
+	// Convert RSS entries to VideoInfo
+	var videos []VideoInfo
+	for _, entry := range feed.Entries {
+		// Extract video ID from entry.ID which looks like "yt:video:VIDEO_ID"
+		videoID := extractVideoIDFromRSSEntry(entry)
+		if videoID == "" {
+			continue
+		}
+
+		// Only include videos published after 'since' time
+		if entry.Published.After(since) {
+			videos = append(videos, VideoInfo{
+				ID:          videoID,
+				Title:       entry.Title,
+				PublishTime: entry.Published,
+			})
+		}
+	}
+
+	log.Printf("Found %d new videos from channel RSS (channel_id: %s)", len(videos), resolvedChannelID)
+	return videos, nil
+}
+
+func resolveRSSChannelID(channelID, channelURL string) (string, error) {
+	if strings.HasPrefix(channelID, "UC") {
+		return channelID, nil
+	}
+
+	// Backward compatibility for legacy entries where ID wasn't canonical.
+	return extractChannelID(channelURL)
+}
+
+// extractChannelID attempts to extract the channel ID from various YouTube channel URL formats
+func extractChannelID(channelURL string) (string, error) {
+	// Try to match /channel/CHANNEL_ID format
+	re := regexp.MustCompile(`/channel/([A-Za-z0-9_-]+)`)
+	if matches := re.FindStringSubmatch(channelURL); len(matches) > 1 {
+		return matches[1], nil
+	}
+
+	// Try to match /@HANDLE format (custom URL)
+	re = regexp.MustCompile(`/@([A-Za-z0-9_-]+)/?$`)
+	if matches := re.FindStringSubmatch(channelURL); len(matches) > 1 {
+		// RSS doesn't work with custom handles; need to resolve to channel ID
+		// For now, return error - could be enhanced with a separate API call
+		return "", fmt.Errorf("custom channel handle not supported for RSS (use /channel/ID format)")
+	}
+
+	return "", fmt.Errorf("could not extract channel ID from URL: %s", channelURL)
+}
+
+// extractVideoIDFromRSSEntry extracts the video ID from an RSS entry
+func extractVideoIDFromRSSEntry(entry RSSEntry) string {
+	// First try the dedicated videoId field
+	if entry.VideoID != "" {
+		return entry.VideoID
+	}
+
+	// Fall back to parsing from ID field which looks like "yt:video:dQw4w9WgXcQ"
+	if entry.ID != "" {
+		parts := strings.Split(entry.ID, ":")
+		if len(parts) >= 3 {
+			return parts[len(parts)-1]
+		}
+	}
+
+	return ""
+}
+
 // GetVideoInfo retrieves metadata for a specific video
 func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	log.Printf("Fetching video info: %s", videoURL)
@@ -193,6 +327,44 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	}
 
 	return &info, nil
+}
+
+// ResolveChannelID resolves a YouTube channel URL to a canonical channel ID (UC...)
+// using yt-dlp metadata, falling back to URL extraction if needed.
+func (d *Downloader) ResolveChannelID(channelURL string) (string, error) {
+	cmd := d.buildYtDlpCommand(
+		"--dump-single-json",
+		"--skip-download",
+		"--playlist-end", "1",
+		channelURL,
+	)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("yt-dlp failed resolving channel id: %v, stderr: %s", err, stderr.String())
+	}
+
+	var info VideoInfo
+	if err := json.Unmarshal(stdout.Bytes(), &info); err != nil {
+		return "", fmt.Errorf("failed to parse yt-dlp channel info: %v", err)
+	}
+
+	if strings.HasPrefix(info.ChannelID, "UC") {
+		return info.ChannelID, nil
+	}
+
+	if strings.HasPrefix(info.UploaderID, "UC") {
+		return info.UploaderID, nil
+	}
+
+	if extracted, err := extractChannelID(channelURL); err == nil {
+		return extracted, nil
+	}
+
+	return "", fmt.Errorf("could not resolve canonical channel id from url: %s", channelURL)
 }
 
 // buildFormatString constructs a yt-dlp format string based on desired quality and format
@@ -229,8 +401,6 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		return result, fmt.Errorf("failed to create directory: %v", err)
 	}
-
-	log.Printf("Downloading video: %s to %s (quality: %s, format: %s, downloadShorts: %v)", videoURL, channelDir, quality, format, downloadShorts)
 
 	// First, fetch metadata with yt-dlp
 	metadata, err := d.fetchVideoMetadata(videoURL)
@@ -294,7 +464,6 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 			reason := extractSkipReason(errOutput)
 			result.Skipped = true
 			result.SkipReason = reason
-			log.Printf("Skipped video %s: %s", videoURL, reason)
 			return result, nil
 		}
 		return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", err, errOutput)
@@ -309,7 +478,6 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 			}
 			result.Skipped = true
 			result.SkipReason = reason
-			log.Printf("Skipped video %s (%s): %s", videoURL, videoID, reason)
 			return result, nil
 		}
 	}
@@ -611,6 +779,95 @@ func findTrackedDownloadDate(baseName string, videos []DownloadedVideo) (time.Ti
 	}
 
 	return time.Time{}, false
+}
+
+// RemoveChannelResources deletes all downloaded files/resources for a channel.
+// It removes the channel directory and any tracked files that may exist elsewhere.
+func (d *Downloader) RemoveChannelResources(channel Channel) error {
+	var firstErr error
+
+	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channel.Name))
+	if err := os.RemoveAll(channelDir); err != nil {
+		firstErr = err
+	}
+
+	trackedIDs := map[string]struct{}{}
+	for _, vid := range channel.DownloadedVideos {
+		if vid.ID != "" {
+			trackedIDs[vid.ID] = struct{}{}
+		}
+	}
+
+	if len(trackedIDs) == 0 {
+		return firstErr
+	}
+
+	_ = filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		name := filepath.Base(path)
+		for id := range trackedIDs {
+			if strings.Contains(name, id) {
+				if rmErr := os.Remove(path); rmErr != nil && firstErr == nil {
+					firstErr = rmErr
+				}
+				break
+			}
+		}
+		return nil
+	})
+
+	return firstErr
+}
+
+// RemoveVideoResources deletes all downloaded files/resources for an individual video entry.
+func (d *Downloader) RemoveVideoResources(video Video) error {
+	var firstErr error
+
+	trackedIDs := map[string]struct{}{}
+	if video.ID != "" {
+		trackedIDs[video.ID] = struct{}{}
+	}
+	for _, vid := range video.DownloadedVideos {
+		if vid.ID != "" {
+			trackedIDs[vid.ID] = struct{}{}
+		}
+	}
+
+	if len(trackedIDs) == 0 {
+		return nil
+	}
+
+	_ = filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		name := filepath.Base(path)
+		for id := range trackedIDs {
+			if strings.Contains(name, id) {
+				if rmErr := os.Remove(path); rmErr != nil && firstErr == nil {
+					firstErr = rmErr
+				}
+				break
+			}
+		}
+		return nil
+	})
+
+	// Remove any empty subdirectories left behind
+	_ = filepath.Walk(d.config.DownloadDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || !info.IsDir() || path == d.config.DownloadDir {
+			return nil
+		}
+		entries, readErr := os.ReadDir(path)
+		if readErr == nil && len(entries) == 0 {
+			_ = os.Remove(path)
+		}
+		return nil
+	})
+
+	return firstErr
 }
 
 // sanitizeFilename removes or replaces characters that are invalid in filenames

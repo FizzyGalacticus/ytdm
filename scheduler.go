@@ -52,7 +52,7 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 	var shutdownMu sync.RWMutex
 	shuttingDown := false
 
-	// Create a semaphore to limit concurrent downloads
+	// Create a semaphore to limit concurrent operations
 	semaphore := make(chan struct{}, config.MaxConcurrent)
 	var wg sync.WaitGroup
 
@@ -62,11 +62,14 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 		shutdownMu.Lock()
 		shuttingDown = true
 		shutdownMu.Unlock()
-		log.Println("Shutdown signal received, finishing in-progress downloads...")
+		log.Println("Shutdown signal received, finishing in-progress operations...")
 	}()
 
-	// Check channels
+	// Get all channels and videos upfront
 	channels := storage.GetChannels()
+	videos := storage.GetVideos()
+
+	// Check channels in parallel
 	for _, channel := range channels {
 		shutdownMu.RLock()
 		if shuttingDown {
@@ -93,8 +96,7 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 		}(channel)
 	}
 
-	// Check individual videos
-	videos := storage.GetVideos()
+	// Check individual videos in parallel
 	for _, video := range videos {
 		shutdownMu.RLock()
 		if shuttingDown {
@@ -121,29 +123,16 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 		}(video)
 	}
 
-	// Wait for all downloads to complete
-	log.Println("Waiting for in-progress downloads to complete...")
+	// Wait for all checks and downloads to complete
+	log.Println("Waiting for in-progress operations to complete...")
 	wg.Wait()
-	log.Println("All downloads completed")
+	log.Println("All operations completed")
 
-	// Only clean old videos if not shutting down
+	// Only run cleanup if not shutting down
 	shutdownMu.RLock()
 	if !shuttingDown {
 		shutdownMu.RUnlock()
-		// Clean old videos per channel
-		for _, channel := range channels {
-			if err := downloader.CleanOldVideosForChannel(channel.Name, channel.ID, channel.RetentionDays, storage); err != nil {
-				log.Printf("Error cleaning old videos for channel %s: %v", channel.Name, err)
-			}
-		}
-
-		// Clean old videos for individual video entries
-		videos := storage.GetVideos()
-		for _, video := range videos {
-			if err := downloader.CleanOldVideosForVideo(video.Title, video.ID, video.RetentionDays, storage); err != nil {
-				log.Printf("Error cleaning old videos for video %s: %v", video.Title, err)
-			}
-		}
+		cleanupOldVideos(ctx, channels, videos, downloader, storage)
 	} else {
 		shutdownMu.RUnlock()
 		log.Println("Skipping cleanup due to shutdown")
@@ -152,9 +141,74 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 	log.Println("Scheduled check completed")
 }
 
+// cleanupOldVideos runs retention cleanup for all channels and videos in parallel
+func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, downloader *Downloader, storage *Storage) {
+	log.Println("Starting cleanup of old videos...")
+
+	// Semaphore to limit concurrent cleanup operations
+	cleanupSemaphore := make(chan struct{}, 2) // Allow 2 concurrent cleanups
+	var wg sync.WaitGroup
+
+	// Clean channel videos in parallel
+	for _, channel := range channels {
+		// Check shutdown before launching
+		select {
+		case <-ctx.Done():
+			log.Println("Shutdown signal during cleanup, aborting remaining cleanups")
+			goto waitForCleanup
+		default:
+		}
+
+		wg.Add(1)
+		go func(ch Channel) {
+			defer wg.Done()
+
+			cleanupSemaphore <- struct{}{}
+			defer func() { <-cleanupSemaphore }()
+
+			if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, ch.RetentionDays, storage); err != nil {
+				log.Printf("Error cleaning old videos for channel %s: %v", ch.Name, err)
+			}
+		}(channel)
+	}
+
+	// Clean individual video downloads in parallel
+	for _, vid := range videos {
+		// Check shutdown before launching
+		select {
+		case <-ctx.Done():
+			log.Println("Shutdown signal during cleanup, aborting remaining cleanups")
+			goto waitForCleanup
+		default:
+		}
+
+		wg.Add(1)
+		go func(video Video) {
+			defer wg.Done()
+
+			cleanupSemaphore <- struct{}{}
+			defer func() { <-cleanupSemaphore }()
+
+			if err := downloader.CleanOldVideosForVideo(video.Title, video.ID, video.RetentionDays, storage); err != nil {
+				log.Printf("Error cleaning old videos for video %s: %v", video.Title, err)
+			}
+		}(vid)
+	}
+
+waitForCleanup:
+	// Wait for all cleanup operations to complete
+	wg.Wait()
+	log.Println("Cleanup of old videos completed")
+}
+
 // processChannel checks a channel for new videos and downloads them
 func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader) error {
 	log.Printf("Processing channel: %s (retention: %d days)", channel.Name, channel.RetentionDays)
+
+	if !storage.HasChannel(channel.ID) {
+		log.Printf("Channel %s removed during processing; skipping", channel.Name)
+		return nil
+	}
 
 	// Always update last checked time when we attempt to process (but not on shutdown)
 	defer func() {
@@ -175,8 +229,15 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		since = channel.CutoffDate.AddDate(0, 0, -1)
 	}
 
-	// Always check for videos in the retention/cutoff window
-	videos, err := downloader.GetChannelVideos(channel.URL, since)
+	// Always try fast index (RSS) first, then fall back to yt-dlp
+	var videos []VideoInfo
+	var err error
+	videos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since)
+	if err != nil {
+		log.Printf("Fast index (RSS) failed for channel %s, falling back to yt-dlp: %v", channel.Name, err)
+		videos, err = downloader.GetChannelVideos(channel.URL, since)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -187,6 +248,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 
 	// Download each video that hasn't been downloaded yet
 	for _, video := range videos {
+		if !storage.HasChannel(channel.ID) {
+			log.Printf("Channel %s removed during processing; stopping remaining downloads", channel.Name)
+			return nil
+		}
+
 		// Check if we should start a new download
 		select {
 		case <-ctx.Done():
@@ -198,7 +264,6 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		// Skip if already downloaded
 		if storage.IsVideoDownloaded(channel.ID, video.ID) {
 			skippedAlreadyDownloadedCount++
-			log.Printf("Skipping video %s (%s): already marked as downloaded", video.Title, video.ID)
 			continue
 		}
 
@@ -209,7 +274,6 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			// Continue with other videos even if one fails
 		} else if result != nil && result.Skipped {
 			skippedByDownloaderCount++
-			log.Printf("Skipped video %s (%s): %s", video.Title, video.ID, result.SkipReason)
 		} else {
 			// Mark as downloaded
 			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title); err != nil {
@@ -236,6 +300,11 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	default:
 	}
 
+	if !storage.HasVideo(video.ID) {
+		log.Printf("Video %s removed during processing; skipping", video.Title)
+		return nil
+	}
+
 	// Always update last checked time when we attempt to process (but not on shutdown)
 	defer func() {
 		if ctx.Err() != nil {
@@ -254,7 +323,6 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	// Skip if already downloaded
 	if storage.IsVideoDownloaded(video.ID, info.ID) {
-		log.Printf("Video %s already downloaded, skipping", video.Title)
 		return nil
 	}
 
@@ -266,6 +334,11 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		channelName = "unknown"
 	}
 
+	if !storage.HasVideo(video.ID) {
+		log.Printf("Video %s removed during processing; stopping download", video.Title)
+		return nil
+	}
+
 	result, err := downloader.DownloadVideo(video.URL, info.ID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
 	if err != nil {
 		log.Printf("Failed to download video %s: %v", video.Title, err)
@@ -274,7 +347,6 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	if result != nil && result.Skipped {
-		log.Printf("Skipping video %s (%s): %s", video.Title, info.ID, result.SkipReason)
 		return nil
 	}
 

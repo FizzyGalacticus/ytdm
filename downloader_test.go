@@ -347,6 +347,50 @@ func TestDateBoundaryConditions(t *testing.T) {
 	}
 }
 
+func TestResolveChannelID(t *testing.T) {
+	t.Run("uses channel_id from yt-dlp output", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "fake-yt-dlp.sh")
+		scriptContent := "#!/bin/sh\necho '{\"channel_id\":\"UC123abc\",\"uploader_id\":\"@handle\"}'\n"
+		if err := os.WriteFile(script, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("failed to write fake yt-dlp script: %v", err)
+		}
+
+		cfg := DefaultConfig()
+		cfg.YtDlp.Path = script
+		downloader := NewDownloader(cfg)
+
+		id, err := downloader.ResolveChannelID("https://www.youtube.com/@somehandle")
+		if err != nil {
+			t.Fatalf("ResolveChannelID() error = %v", err)
+		}
+		if id != "UC123abc" {
+			t.Fatalf("ResolveChannelID() = %q, want %q", id, "UC123abc")
+		}
+	})
+
+	t.Run("falls back to /channel/ URL extraction", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		script := filepath.Join(tmpDir, "fake-yt-dlp.sh")
+		scriptContent := "#!/bin/sh\necho '{\"uploader_id\":\"@handle\"}'\n"
+		if err := os.WriteFile(script, []byte(scriptContent), 0755); err != nil {
+			t.Fatalf("failed to write fake yt-dlp script: %v", err)
+		}
+
+		cfg := DefaultConfig()
+		cfg.YtDlp.Path = script
+		downloader := NewDownloader(cfg)
+
+		id, err := downloader.ResolveChannelID("https://www.youtube.com/channel/UCfallback123")
+		if err != nil {
+			t.Fatalf("ResolveChannelID() error = %v", err)
+		}
+		if id != "UCfallback123" {
+			t.Fatalf("ResolveChannelID() = %q, want %q", id, "UCfallback123")
+		}
+	})
+}
+
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -934,5 +978,96 @@ func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(trackedRecent); err != nil {
 		t.Fatalf("expected recent tracked file to remain, stat err = %v", err)
+	}
+}
+
+func TestRemoveChannelResourcesRemovesChannelDirectoryAndTrackedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.DownloadDir = tmpDir
+	d := NewDownloader(cfg)
+
+	channelName := "My Channel"
+	channelDir := filepath.Join(tmpDir, sanitizeFilename(channelName))
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	tracked1 := filepath.Join(channelDir, "title-abc123.mp4")
+	tracked2 := filepath.Join(tmpDir, "Elsewhere", "note-abc123.nfo")
+	untracked := filepath.Join(tmpDir, "Elsewhere", "other-zzz999.mp4")
+	if err := os.MkdirAll(filepath.Dir(tracked2), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	for _, p := range []string{tracked1, tracked2, untracked} {
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatalf("write failed for %s: %v", p, err)
+		}
+	}
+
+	channel := Channel{
+		ID:   "UC123",
+		Name: channelName,
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "abc123", Title: "Tracked"},
+		},
+	}
+
+	if err := d.RemoveChannelResources(channel); err != nil {
+		t.Fatalf("RemoveChannelResources() error = %v", err)
+	}
+
+	if _, err := os.Stat(channelDir); !os.IsNotExist(err) {
+		t.Fatalf("expected channel directory removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(tracked2); !os.IsNotExist(err) {
+		t.Fatalf("expected tracked file removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(untracked); err != nil {
+		t.Fatalf("expected untracked file to remain, stat err = %v", err)
+	}
+}
+
+func TestRemoveVideoResourcesRemovesTrackedFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := DefaultConfig()
+	cfg.DownloadDir = tmpDir
+	d := NewDownloader(cfg)
+
+	uploaderDir := filepath.Join(tmpDir, "Uploader")
+	if err := os.MkdirAll(uploaderDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	tracked1 := filepath.Join(uploaderDir, "my-title-vid111.mp4")
+	tracked2 := filepath.Join(uploaderDir, "my-title-vid222.nfo")
+	untracked := filepath.Join(uploaderDir, "my-title-keep999.mp4")
+	for _, p := range []string{tracked1, tracked2, untracked} {
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatalf("write failed for %s: %v", p, err)
+		}
+	}
+
+	v := Video{
+		ID: "vid111",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "vid222", Title: "Tracked2"},
+		},
+	}
+
+	if err := d.RemoveVideoResources(v); err != nil {
+		t.Fatalf("RemoveVideoResources() error = %v", err)
+	}
+
+	if _, err := os.Stat(tracked1); !os.IsNotExist(err) {
+		t.Fatalf("expected tracked1 removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(tracked2); !os.IsNotExist(err) {
+		t.Fatalf("expected tracked2 removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(untracked); err != nil {
+		t.Fatalf("expected untracked file to remain, stat err = %v", err)
 	}
 }

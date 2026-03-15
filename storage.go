@@ -110,6 +110,20 @@ func (s *Storage) GetChannels() []Channel {
 	return channels
 }
 
+// HasChannel returns true if a channel with the given ID exists
+func (s *Storage) HasChannel(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, ch := range s.data.Channels {
+		if ch.ID == id {
+			return true
+		}
+	}
+
+	return false
+}
+
 // AddChannel adds a new channel
 func (s *Storage) AddChannel(channel Channel) error {
 	s.mu.Lock()
@@ -295,6 +309,20 @@ func (s *Storage) GetVideos() []Video {
 	videos := make([]Video, len(s.data.Videos))
 	copy(videos, s.data.Videos)
 	return videos
+}
+
+// HasVideo returns true if a video entry with the given ID exists
+func (s *Storage) HasVideo(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, v := range s.data.Videos {
+		if v.ID == id {
+			return true
+		}
+	}
+
+	return false
 }
 
 // AddVideo adds a new video
