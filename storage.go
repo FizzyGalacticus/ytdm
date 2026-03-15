@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -175,6 +178,21 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Ti
 			s.data.Channels[i].VideoQuality = videoQuality
 			s.data.Channels[i].VideoFormat = videoFormat
 			s.data.Channels[i].DownloadShorts = downloadShorts
+			return s.save()
+		}
+	}
+
+	return nil
+}
+
+// UpdateChannelID updates the ID field for a channel (used for migrations)
+func (s *Storage) UpdateChannelID(oldID, newID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID == oldID {
+			s.data.Channels[i].ID = newID
 			return s.save()
 		}
 	}
@@ -426,4 +444,53 @@ func (s *Storage) ClearVideoError(id string) error {
 	}
 
 	return nil
+}
+
+// MigrateChannelIDs resolves and updates channel IDs for any channels that don't have proper UC... IDs
+// This should be called during startup to ensure all channels have canonical channel IDs
+func (s *Storage) MigrateChannelIDs(downloader *Downloader) (migratedCount int, errors []string) {
+	s.mu.RLock()
+	channelsToMigrate := []int{}
+	for i, ch := range s.data.Channels {
+		// Check if the channel ID is not a proper UC... format (canonical YouTube ID)
+		if !strings.HasPrefix(ch.ID, "UC") {
+			channelsToMigrate = append(channelsToMigrate, i)
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(channelsToMigrate) == 0 {
+		return 0, nil
+	}
+
+	log.Printf("Found %d channel(s) needing ID migration", len(channelsToMigrate))
+
+	// Process each channel that needs migration
+	for _, idx := range channelsToMigrate {
+		s.mu.RLock()
+		channel := s.data.Channels[idx]
+		s.mu.RUnlock()
+
+		// Resolve the canonical channel ID using yt-dlp
+		newID, err := downloader.ResolveChannelID(channel.URL)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to resolve channel ID for %s (%s): %v", channel.Name, channel.URL, err)
+			log.Printf("Migration error: %s", errMsg)
+			errors = append(errors, errMsg)
+			continue
+		}
+
+		// Update the channel ID in storage
+		if err := s.UpdateChannelID(channel.ID, newID); err != nil {
+			errMsg := fmt.Sprintf("Failed to update channel ID for %s: %v", channel.Name, err)
+			log.Printf("Migration error: %s", errMsg)
+			errors = append(errors, errMsg)
+			continue
+		}
+
+		log.Printf("Successfully migrated channel %s: %s → %s", channel.Name, channel.ID, newID)
+		migratedCount++
+	}
+
+	return migratedCount, errors
 }

@@ -36,6 +36,21 @@ func main() {
 	}
 	log.Println("Storage initialized")
 
+	// Create downloader for migrations
+	downloader := NewDownloader(config)
+
+	// Run channel ID migration for any older entries
+	migratedCount, migrationErrors := storage.MigrateChannelIDs(downloader)
+	if migratedCount > 0 {
+		log.Printf("Completed channel ID migration: %d channel(s) updated", migratedCount)
+		if len(migrationErrors) > 0 {
+			log.Printf("Migration completed with %d error(s)", len(migrationErrors))
+			for _, errMsg := range migrationErrors {
+				log.Printf("  - %s", errMsg)
+			}
+		}
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
