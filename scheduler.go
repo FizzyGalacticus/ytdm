@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -245,6 +246,8 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	downloadCount := 0
 	skippedAlreadyDownloadedCount := 0
 	skippedByDownloaderCount := 0
+	failedDownloadCount := 0
+	var firstDownloadErr error
 
 	// Download each video that hasn't been downloaded yet
 	for _, video := range videos {
@@ -271,6 +274,10 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		result, err := downloader.DownloadVideo(video.ID, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
 		if err != nil {
 			log.Printf("Failed to download video %s: %v", video.Title, err)
+			failedDownloadCount++
+			if firstDownloadErr == nil {
+				firstDownloadErr = err
+			}
 			// Continue with other videos even if one fails
 		} else if result != nil && result.Skipped {
 			skippedByDownloaderCount++
@@ -284,6 +291,9 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	}
 
 	log.Printf("Channel %s: downloaded %d new videos, skipped %d already downloaded, skipped %d by filters/unavailable", channel.Name, downloadCount, skippedAlreadyDownloadedCount, skippedByDownloaderCount)
+	if failedDownloadCount > 0 {
+		return fmt.Errorf("failed to download %d video(s) for channel %s; first error: %w", failedDownloadCount, channel.Name, firstDownloadErr)
+	}
 
 	return nil
 }

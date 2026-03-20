@@ -63,53 +63,133 @@ func NewDownloader(config *Config) *Downloader {
 	return &Downloader{config: config}
 }
 
-// buildYtDlpCommand creates a base yt-dlp command with cookies configured
-func (d *Downloader) buildYtDlpCommand(args ...string) *exec.Cmd {
-	cmdArgs := args
+// buildBaseOptions returns the common yt-dlp flags, reading all config fields under the
+// config's RLock to prevent races with concurrent config updates.
+func (d *Downloader) buildBaseOptions() []string {
+	d.config.RLock()
+	restrictFilenames := d.config.YtDlp.RestrictFilenames
+	cacheDir := d.config.YtDlp.CacheDir
+	throughputLimit := d.config.YtDlp.DownloadThroughputLimit
+	d.config.RUnlock()
 
-	// Add user-agent and base options
-	baseOptions := []string{
+	options := []string{
 		"--user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-		"--socket-timeout", "30", // 30 second socket timeout
+		"--socket-timeout", "30",
 		"--extractor-args", "youtube:lang=en",
-		"--js-runtimes", "node", // Use node for JavaScript extraction (more reliable than deno)
+		"--js-runtimes", "node",
 		"--windows-filenames",
 		"--quiet",
 	}
 
-	if d.config.YtDlp.RestrictFilenames {
-		baseOptions = append(baseOptions, "--restrict-filenames")
+	if restrictFilenames {
+		options = append(options, "--restrict-filenames")
 	}
-
-	if d.config.YtDlp.CacheDir != "" {
-		baseOptions = append(baseOptions, "--cache-dir", d.config.YtDlp.CacheDir)
+	if cacheDir != "" {
+		options = append(options, "--cache-dir", cacheDir)
 	}
-
-	if d.config.YtDlp.DownloadThroughputLimit != "" {
-		baseOptions = append(baseOptions, "--limit-rate", d.config.YtDlp.DownloadThroughputLimit)
+	if throughputLimit != "" {
+		options = append(options, "--limit-rate", throughputLimit)
 	}
 
 	sleepInterval := d.config.GetExtractorSleepInterval()
 	if sleepInterval > 0 {
 		sleepSeconds := int(sleepInterval.Seconds())
 		jittered := addJitterSeconds(sleepSeconds, 0.5)
-		baseOptions = append(baseOptions,
+		options = append(options,
 			"--sleep-requests", fmt.Sprintf("%d", jittered),
 			"--sleep-interval", fmt.Sprintf("%d", jittered),
 			"--sleep-subtitles", fmt.Sprintf("%d", jittered),
 		)
 	}
 
-	cmdArgs = append(baseOptions, cmdArgs...)
+	return options
+}
 
-	// Add cookies support if configured
-	if d.config.YtDlp.CookiesBrowser != "" {
-		cmdArgs = append([]string{"--cookies-from-browser", d.config.YtDlp.CookiesBrowser}, cmdArgs...)
-	} else if d.config.YtDlp.CookiesFile != "" {
-		cmdArgs = append([]string{"--cookies", d.config.YtDlp.CookiesFile}, cmdArgs...)
+// buildYtDlpCommand creates a yt-dlp command with cookies injected (if configured).
+// All config fields are read under the config's RLock.
+func (d *Downloader) buildYtDlpCommand(args ...string) *exec.Cmd {
+	cmdArgs := append(d.buildBaseOptions(), args...)
+
+	d.config.RLock()
+	path := d.config.YtDlp.Path
+	cookiesBrowser := d.config.YtDlp.CookiesBrowser
+	cookiesFile := d.config.YtDlp.CookiesFile
+	d.config.RUnlock()
+
+	if cookiesBrowser != "" {
+		cmdArgs = append([]string{"--cookies-from-browser", cookiesBrowser}, cmdArgs...)
+	} else if cookiesFile != "" {
+		cmdArgs = append([]string{"--cookies", cookiesFile}, cmdArgs...)
 	}
 
-	return exec.Command(d.config.YtDlp.Path, cmdArgs...)
+	return exec.Command(path, cmdArgs...)
+}
+
+// buildYtDlpCommandNoCookies creates a yt-dlp command without any cookie arguments.
+func (d *Downloader) buildYtDlpCommandNoCookies(args ...string) *exec.Cmd {
+	cmdArgs := append(d.buildBaseOptions(), args...)
+
+	d.config.RLock()
+	path := d.config.YtDlp.Path
+	d.config.RUnlock()
+
+	return exec.Command(path, cmdArgs...)
+}
+
+// isAuthError returns true when yt-dlp stderr suggests that authentication or
+// cookie-based access is required. Used to decide whether to retry with cookies.
+func isAuthError(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	for _, indicator := range []string{
+		"sign in",
+		"login required",
+		"requires authentication",
+		"http error 401",
+		"age-restricted",
+		"age restricted",
+		"members only",
+		"members-only",
+		"premium",
+		"private video",
+		"not a bot",
+	} {
+		if strings.Contains(lower, indicator) {
+			return true
+		}
+	}
+	return false
+}
+
+// runYtDlpWithCookieRetry runs yt-dlp without cookies first. If the command fails
+// with an auth-related error and cookies are configured, it retries automatically
+// with cookies. Returns stdout, stderr, and the exec error from the final attempt.
+func (d *Downloader) runYtDlpWithCookieRetry(args []string) (stdout bytes.Buffer, stderr bytes.Buffer, err error) {
+	cmd := d.buildYtDlpCommandNoCookies(args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err == nil {
+		return
+	}
+
+	d.config.RLock()
+	hasCookies := d.config.YtDlp.CookiesBrowser != "" || d.config.YtDlp.CookiesFile != ""
+	d.config.RUnlock()
+
+	if !hasCookies || !isAuthError(stderr.String()) {
+		return
+	}
+
+	log.Printf("Auth-related error detected, retrying with cookies...")
+	stdout.Reset()
+	stderr.Reset()
+
+	cmd = d.buildYtDlpCommand(args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	return
 }
 
 func addJitterSeconds(baseSeconds int, jitterPercent float64) int {
@@ -134,18 +214,13 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 	log.Printf("Fetching video list from channel: %s", channelURL)
 
 	// Use yt-dlp to get video information in JSON format
-	cmd := d.buildYtDlpCommand(
+	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{
 		"--dump-json",
 		"--skip-download",
 		"--playlist-end", "50", // Limit to recent 50 videos
 		channelURL,
-	)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %v, stderr: %s", err, stderr.String())
 	}
 
@@ -300,16 +375,8 @@ func extractVideoIDFromRSSEntry(entry RSSEntry) string {
 func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	log.Printf("Fetching video info: %s", videoURL)
 
-	cmd := d.buildYtDlpCommand(
-		"--dump-json",
-		videoURL,
-	)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{"--dump-json", videoURL})
+	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %v, stderr: %s", err, stderr.String())
 	}
 
@@ -332,18 +399,13 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 // ResolveChannelID resolves a YouTube channel URL to a canonical channel ID (UC...)
 // using yt-dlp metadata, falling back to URL extraction if needed.
 func (d *Downloader) ResolveChannelID(channelURL string) (string, error) {
-	cmd := d.buildYtDlpCommand(
+	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{
 		"--dump-single-json",
 		"--skip-download",
 		"--playlist-end", "1",
 		channelURL,
-	)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
+	})
+	if err != nil {
 		return "", fmt.Errorf("yt-dlp failed resolving channel id: %v, stderr: %s", err, stderr.String())
 	}
 
@@ -453,20 +515,44 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		videoURL,
 	)
 
-	cmd := d.buildYtDlpCommand(cmdArgs...)
-
+	// Try without cookies first; on auth errors retry with cookies if configured
+	var runErr error
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		errOutput := strings.TrimSpace(stderr.String())
-		if isSkippableYtDlpOutput(errOutput) {
-			reason := extractSkipReason(errOutput)
-			result.Skipped = true
-			result.SkipReason = reason
-			return result, nil
+	tryDownload := func(withCookies bool) {
+		stderr.Reset()
+		var cmd *exec.Cmd
+		if withCookies {
+			cmd = d.buildYtDlpCommand(cmdArgs...)
+		} else {
+			cmd = d.buildYtDlpCommandNoCookies(cmdArgs...)
 		}
-		return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", err, errOutput)
+		cmd.Stderr = &stderr
+		runErr = cmd.Run()
+	}
+
+	tryDownload(false)
+	if runErr != nil {
+		errOutput := strings.TrimSpace(stderr.String())
+
+		d.config.RLock()
+		hasCookies := d.config.YtDlp.CookiesBrowser != "" || d.config.YtDlp.CookiesFile != ""
+		d.config.RUnlock()
+
+		if hasCookies && isAuthError(errOutput) {
+			log.Printf("Auth error on download, retrying with cookies...")
+			tryDownload(true)
+			errOutput = strings.TrimSpace(stderr.String())
+		}
+
+		if runErr != nil {
+			if isSkippableYtDlpOutput(errOutput) {
+				reason := extractSkipReason(errOutput)
+				result.Skipped = true
+				result.SkipReason = reason
+				return result, nil
+			}
+			return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", runErr, errOutput)
+		}
 	}
 
 	if videoID != "" {
@@ -910,20 +996,18 @@ type VideoMetadata struct {
 
 // fetchVideoMetadata fetches video metadata using yt-dlp
 func (d *Downloader) fetchVideoMetadata(videoURL string) (*VideoMetadata, error) {
-	cmd := d.buildYtDlpCommand(
+	stdout, _, err := d.runYtDlpWithCookieRetry([]string{
 		"--dump-json",
 		"--no-warnings",
 		"--skip-download",
 		videoURL,
-	)
-
-	output, err := cmd.Output()
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %v", err)
 	}
 
 	var data map[string]interface{}
-	if err := json.Unmarshal(output, &data); err != nil {
+	if err := json.Unmarshal(stdout.Bytes(), &data); err != nil {
 		return nil, fmt.Errorf("failed to parse metadata JSON: %v", err)
 	}
 
