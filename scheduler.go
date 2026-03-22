@@ -453,8 +453,21 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	// Retention is based on download date, so don't skip based on publish date
 
-	// Download the video with the video's preferred quality and shorts settings
-	channelName := "unknown"
+	// Resolve channel/uploader name from metadata so files are always grouped by channel.
+	videoInfo, err := downloader.GetVideoInfo(video.URL)
+	if err != nil {
+		log.Printf("Failed to resolve channel metadata for video %s: %v", video.Title, err)
+		return err
+	}
+
+	channelName := strings.TrimSpace(videoInfo.Uploader)
+	if channelName == "" {
+		channelName = strings.TrimSpace(videoInfo.UploaderID)
+	}
+	if channelName == "" {
+		log.Printf("Failed to determine channel name for video %s", video.Title)
+		return fmt.Errorf("could not determine channel name for video %s", video.Title)
+	}
 
 	if !storage.HasVideo(video.ID) {
 		return nil

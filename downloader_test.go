@@ -820,6 +820,17 @@ func TestCountVideoFiles(t *testing.T) {
 		}
 	})
 
+	t.Run("excludes sidecar metadata and thumbnail files", func(t *testing.T) {
+		os.WriteFile(filepath.Join(tmpDir, "test-video-123.info.json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(tmpDir, "test-video-123.jpg"), []byte("jpg"), 0644)
+		os.WriteFile(filepath.Join(tmpDir, "test-video-123.webp"), []byte("webp"), 0644)
+
+		count := downloader.countVideoFiles(tmpDir, videoID)
+		if count != 2 {
+			t.Errorf("Expected 2 files (sidecars excluded), got %d", count)
+		}
+	})
+
 	t.Run("ignores non-matching files", func(t *testing.T) {
 		// Add non-matching files
 		os.WriteFile(filepath.Join(tmpDir, "other-video-456.mp4"), []byte("test"), 0644)
@@ -844,6 +855,212 @@ func TestCountVideoFiles(t *testing.T) {
 			t.Errorf("Expected 0 files for non-existent directory, got %d", count)
 		}
 	})
+}
+
+func TestDeleteInfoJSONFilesForVideo(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	downloader := NewDownloader(config)
+
+	videoID := "abc123"
+	matching := filepath.Join(tmpDir, "my-video-abc123.info.json")
+	other := filepath.Join(tmpDir, "my-video-other999.info.json")
+
+	if err := os.WriteFile(matching, []byte("{}"), 0644); err != nil {
+		t.Fatalf("WriteFile(matching) error = %v", err)
+	}
+	if err := os.WriteFile(other, []byte("{}"), 0644); err != nil {
+		t.Fatalf("WriteFile(other) error = %v", err)
+	}
+
+	if err := downloader.deleteInfoJSONFilesForVideo(tmpDir, videoID); err != nil {
+		t.Fatalf("deleteInfoJSONFilesForVideo() error = %v", err)
+	}
+
+	if _, err := os.Stat(matching); !os.IsNotExist(err) {
+		t.Fatalf("expected matching info json to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("expected non-matching info json to remain, stat err = %v", err)
+	}
+}
+
+func TestMigrateUnknownVideosMovesFilesToUploaderDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	unknownDir := filepath.Join(tmpDir, sanitizeFilename("unknown"))
+	if err := os.MkdirAll(unknownDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	videoID := "abc123"
+	prefix := "My Video-" + videoID
+	infoPath := filepath.Join(unknownDir, prefix+".info.json")
+	videoPath := filepath.Join(unknownDir, prefix+".mp4")
+	nfoPath := filepath.Join(unknownDir, prefix+".nfo")
+	thumbPath := filepath.Join(unknownDir, prefix+".jpg")
+
+	infoJSON := `{"id":"abc123","uploader":"Channel One","title":"My Video"}`
+	for path, content := range map[string]string{
+		infoPath:  infoJSON,
+		videoPath: "video",
+		nfoPath:   "nfo",
+		thumbPath: "jpg",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+
+	migratedVideos, movedFiles, errs := downloader.MigrateUnknownVideos()
+	if migratedVideos != 1 {
+		t.Fatalf("expected 1 migrated video, got %d", migratedVideos)
+	}
+	if movedFiles != 4 {
+		t.Fatalf("expected 4 moved files, got %d", movedFiles)
+	}
+	if len(errs) != 0 {
+		t.Fatalf("expected no migration warnings, got %v", errs)
+	}
+
+	targetDir := filepath.Join(tmpDir, sanitizeFilename("Channel One"))
+	for _, movedPath := range []string{
+		filepath.Join(targetDir, prefix+".info.json"),
+		filepath.Join(targetDir, prefix+".mp4"),
+		filepath.Join(targetDir, prefix+".nfo"),
+		filepath.Join(targetDir, prefix+".jpg"),
+	} {
+		if _, err := os.Stat(movedPath); err != nil {
+			t.Fatalf("expected moved file to exist: %s (err=%v)", movedPath, err)
+		}
+	}
+
+	if _, err := os.Stat(videoPath); !os.IsNotExist(err) {
+		t.Fatalf("expected source video file to be moved, stat err = %v", err)
+	}
+}
+
+func TestMigrateUnknownVideosSkipsWhenUploaderMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	unknownDir := filepath.Join(tmpDir, sanitizeFilename("unknown"))
+	if err := os.MkdirAll(unknownDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	videoID := "no-uploader-001"
+	prefix := "No Uploader-" + videoID
+	infoPath := filepath.Join(unknownDir, prefix+".info.json")
+	videoPath := filepath.Join(unknownDir, prefix+".mp4")
+
+	infoJSON := `{"id":"no-uploader-001","title":"No Uploader"}`
+	if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+		t.Fatalf("WriteFile(infoPath) error = %v", err)
+	}
+	if err := os.WriteFile(videoPath, []byte("video"), 0644); err != nil {
+		t.Fatalf("WriteFile(videoPath) error = %v", err)
+	}
+
+	migratedVideos, movedFiles, errs := downloader.MigrateUnknownVideos()
+	if migratedVideos != 0 {
+		t.Fatalf("expected 0 migrated videos, got %d", migratedVideos)
+	}
+	if movedFiles != 0 {
+		t.Fatalf("expected 0 moved files, got %d", movedFiles)
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected migration warnings for missing uploader metadata")
+	}
+
+	if _, err := os.Stat(videoPath); err != nil {
+		t.Fatalf("expected source video file to remain in unknown dir, stat err = %v", err)
+	}
+}
+
+func TestExtractVideoChapters(t *testing.T) {
+	raw := map[string]interface{}{
+		"chapters": []interface{}{
+			map[string]interface{}{
+				"title":      "Intro",
+				"start_time": 0.0,
+				"end_time":   15.5,
+			},
+			map[string]interface{}{
+				"title":      "Main Topic",
+				"start_time": 15.5,
+				"end_time":   120.0,
+			},
+		},
+	}
+
+	chapters := extractVideoChapters(raw)
+	if len(chapters) != 2 {
+		t.Fatalf("expected 2 chapters, got %d", len(chapters))
+	}
+
+	if chapters[0].Title != "Intro" || chapters[0].StartTime != 0.0 || chapters[0].EndTime != 15.5 {
+		t.Fatalf("unexpected first chapter: %#v", chapters[0])
+	}
+	if chapters[1].Title != "Main Topic" || chapters[1].StartTime != 15.5 || chapters[1].EndTime != 120.0 {
+		t.Fatalf("unexpected second chapter: %#v", chapters[1])
+	}
+}
+
+func TestGenerateNFOFileIncludesChapters(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	downloader := NewDownloader(config)
+
+	videoID := "chapters123"
+	videoPath := filepath.Join(tmpDir, "Example Title-"+videoID+".mp4")
+	if err := os.WriteFile(videoPath, []byte("video"), 0644); err != nil {
+		t.Fatalf("WriteFile(video) error = %v", err)
+	}
+
+	metadata := &VideoMetadata{
+		ID:          videoID,
+		Title:       "Example Title",
+		Description: "Example Description",
+		Uploader:    "Example Channel",
+		UploadDate:  "2026-03-24",
+		Duration:    300,
+		Chapters: []VideoChapter{
+			{Title: "Intro", StartTime: 0, EndTime: 30},
+			{Title: "Deep Dive", StartTime: 30, EndTime: 300},
+		},
+	}
+
+	if err := downloader.generateNFOFile(tmpDir, metadata); err != nil {
+		t.Fatalf("generateNFOFile() error = %v", err)
+	}
+
+	nfoPath := filepath.Join(tmpDir, "Example Title-"+videoID+".nfo")
+	contentBytes, err := os.ReadFile(nfoPath)
+	if err != nil {
+		t.Fatalf("ReadFile(nfo) error = %v", err)
+	}
+	content := string(contentBytes)
+
+	checks := []string{
+		"<chapters>",
+		"<title>Intro</title>",
+		"<start>0.000</start>",
+		"<end>30.000</end>",
+		"<title>Deep Dive</title>",
+		"<end>300.000</end>",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(content, check) {
+			t.Fatalf("expected NFO to contain %q, got:\n%s", check, content)
+		}
+	}
 }
 
 func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {

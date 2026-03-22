@@ -51,6 +51,17 @@ func main() {
 		}
 	}
 
+	unknownMigratedVideos, unknownMovedFiles, unknownMigrationErrors := downloader.MigrateUnknownVideos()
+	if unknownMigratedVideos > 0 {
+		log.Printf("Migrated %d video(s) from unknown folder (%d file(s) moved)", unknownMigratedVideos, unknownMovedFiles)
+	}
+	if len(unknownMigrationErrors) > 0 {
+		log.Printf("Unknown-folder migration completed with %d warning(s)", len(unknownMigrationErrors))
+		for _, errMsg := range unknownMigrationErrors {
+			log.Printf("  - %s", errMsg)
+		}
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -494,7 +494,10 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	cmdArgs = append(cmdArgs,
 		"--match-filters", matchFilter,
 		"--embed-chapters",
+		"--add-metadata",
 		"--write-info-json",
+		"--write-thumbnail",
+		"--convert-thumbnails", "jpg",
 		"--print", "after_move:%(id)s\t%(title)s",
 		videoURL,
 	)
@@ -629,9 +632,9 @@ func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*Vide
 
 	metadata := &VideoMetadata{
 		ID:          videoID,
-		Title:       strings.TrimSpace(fmt.Sprintf("%v", raw["title"])),
-		Description: strings.TrimSpace(fmt.Sprintf("%v", raw["description"])),
-		Uploader:    strings.TrimSpace(fmt.Sprintf("%v", raw["uploader"])),
+		Title:       getStringField(raw, "title"),
+		Description: getStringField(raw, "description"),
+		Uploader:    getStringField(raw, "uploader"),
 	}
 
 	if uploadDate, ok := raw["upload_date"].(string); ok && len(uploadDate) >= 8 {
@@ -645,6 +648,8 @@ func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*Vide
 	if thumbnail, ok := raw["thumbnail"].(string); ok {
 		metadata.Thumbnail = strings.TrimSpace(thumbnail)
 	}
+
+	metadata.Chapters = extractVideoChapters(raw)
 
 	if metadata.UploadDate == "" {
 		metadata.UploadDate = time.Now().Format("2006-01-02")
@@ -675,12 +680,245 @@ func (d *Downloader) countVideoFiles(channelDir, videoID string) int {
 			continue
 		}
 		name := entry.Name()
-		if strings.Contains(name, videoID) && !strings.HasSuffix(strings.ToLower(name), ".nfo") {
+		lowerName := strings.ToLower(name)
+		if strings.Contains(name, videoID) &&
+			!strings.HasSuffix(lowerName, ".nfo") &&
+			!strings.HasSuffix(lowerName, ".info.json") &&
+			!strings.HasSuffix(lowerName, ".jpg") &&
+			!strings.HasSuffix(lowerName, ".jpeg") &&
+			!strings.HasSuffix(lowerName, ".png") &&
+			!strings.HasSuffix(lowerName, ".webp") {
 			count++
 		}
 	}
 
 	return count
+}
+
+func (d *Downloader) deleteInfoJSONFilesForVideo(channelDir, videoID string) error {
+	if videoID == "" {
+		return fmt.Errorf("empty video id")
+	}
+
+	pattern := filepath.Join(channelDir, "*"+videoID+"*.info.json")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("failed to search info json: %v", err)
+	}
+
+	var firstErr error
+	for _, file := range files {
+		if rmErr := os.Remove(file); rmErr != nil {
+			if firstErr == nil {
+				firstErr = rmErr
+			}
+			continue
+		}
+		log.Printf("Deleted metadata JSON: %s", file)
+	}
+
+	return firstErr
+}
+
+// MigrateUnknownVideos relocates files from the legacy "unknown" folder into
+// channel-named folders using uploader metadata from existing info.json files.
+func (d *Downloader) MigrateUnknownVideos() (migratedVideos int, movedFiles int, errors []string) {
+	unknownDir := filepath.Join(d.config.DownloadDir, sanitizeFilename("unknown"))
+	if stat, err := os.Stat(unknownDir); err != nil || !stat.IsDir() {
+		return 0, 0, nil
+	}
+
+	infoFiles, err := filepath.Glob(filepath.Join(unknownDir, "*.info.json"))
+	if err != nil {
+		return 0, 0, []string{fmt.Sprintf("failed to list info json files in %s: %v", unknownDir, err)}
+	}
+
+	processedVideoIDs := map[string]struct{}{}
+	for _, infoPath := range infoFiles {
+		meta, metaErr := d.loadVideoMetadataFromInfoJSONFile(infoPath)
+		if metaErr != nil {
+			errors = append(errors, fmt.Sprintf("failed reading %s: %v", infoPath, metaErr))
+			continue
+		}
+
+		videoID := strings.TrimSpace(meta.ID)
+		if videoID == "" {
+			errors = append(errors, fmt.Sprintf("missing video id in %s", infoPath))
+			continue
+		}
+
+		if _, seen := processedVideoIDs[videoID]; seen {
+			continue
+		}
+		processedVideoIDs[videoID] = struct{}{}
+
+		channelName := strings.TrimSpace(meta.Uploader)
+		if channelName == "" || strings.EqualFold(channelName, "unknown") {
+			errors = append(errors, fmt.Sprintf("missing uploader metadata for video %s in %s", videoID, infoPath))
+			continue
+		}
+
+		targetDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
+		if targetDir == unknownDir {
+			continue
+		}
+
+		if mkErr := os.MkdirAll(targetDir, 0755); mkErr != nil {
+			errors = append(errors, fmt.Sprintf("failed to create target dir %s for %s: %v", targetDir, videoID, mkErr))
+			continue
+		}
+
+		movedForVideo, moveErr := moveFilesForVideoID(unknownDir, targetDir, videoID)
+		if moveErr != nil {
+			errors = append(errors, fmt.Sprintf("failed moving files for %s: %v", videoID, moveErr))
+			continue
+		}
+
+		if movedForVideo > 0 {
+			migratedVideos++
+			movedFiles += movedForVideo
+		}
+	}
+
+	return migratedVideos, movedFiles, errors
+}
+
+func (d *Downloader) loadVideoMetadataFromInfoJSONFile(infoPath string) (*VideoMetadata, error) {
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read info json: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse info json: %v", err)
+	}
+
+	metadata := &VideoMetadata{
+		ID:          getStringField(raw, "id"),
+		Title:       getStringField(raw, "title"),
+		Description: getStringField(raw, "description"),
+		Uploader:    getStringField(raw, "uploader"),
+	}
+
+	if metadata.Uploader == "" {
+		metadata.Uploader = getStringField(raw, "channel")
+	}
+	if metadata.Uploader == "" {
+		metadata.Uploader = getStringField(raw, "uploader_id")
+	}
+
+	if uploadDate, ok := raw["upload_date"].(string); ok && len(uploadDate) >= 8 {
+		metadata.UploadDate = uploadDate[:4] + "-" + uploadDate[4:6] + "-" + uploadDate[6:8]
+	}
+
+	if duration, ok := raw["duration"].(float64); ok {
+		metadata.Duration = int(duration)
+	}
+
+	if thumbnail, ok := raw["thumbnail"].(string); ok {
+		metadata.Thumbnail = strings.TrimSpace(thumbnail)
+	}
+
+	metadata.Chapters = extractVideoChapters(raw)
+
+	return metadata, nil
+}
+
+func moveFilesForVideoID(fromDir, toDir, videoID string) (int, error) {
+	if strings.TrimSpace(videoID) == "" {
+		return 0, fmt.Errorf("empty video id")
+	}
+
+	entries, err := os.ReadDir(fromDir)
+	if err != nil {
+		return 0, err
+	}
+
+	moved := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.Contains(name, videoID) {
+			continue
+		}
+
+		src := filepath.Join(fromDir, name)
+		dst := filepath.Join(toDir, name)
+
+		if _, statErr := os.Stat(dst); statErr == nil {
+			return moved, fmt.Errorf("destination already exists: %s", dst)
+		}
+
+		if err := os.Rename(src, dst); err != nil {
+			return moved, err
+		}
+		moved++
+	}
+
+	return moved, nil
+}
+
+func getStringField(raw map[string]interface{}, key string) string {
+	val, ok := raw[key]
+	if !ok || val == nil {
+		return ""
+	}
+
+	if s, ok := val.(string); ok {
+		return strings.TrimSpace(s)
+	}
+
+	str := strings.TrimSpace(fmt.Sprintf("%v", val))
+	if str == "<nil>" {
+		return ""
+	}
+
+	return str
+}
+
+func extractVideoChapters(raw map[string]interface{}) []VideoChapter {
+	chaptersRaw, ok := raw["chapters"].([]interface{})
+	if !ok || len(chaptersRaw) == 0 {
+		return nil
+	}
+
+	chapters := make([]VideoChapter, 0, len(chaptersRaw))
+	for _, entry := range chaptersRaw {
+		chapterMap, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		title := getStringField(chapterMap, "title")
+		if title == "" {
+			title = "Chapter"
+		}
+
+		var startTime float64
+		if start, ok := chapterMap["start_time"].(float64); ok {
+			startTime = start
+		}
+
+		var endTime float64
+		if end, ok := chapterMap["end_time"].(float64); ok {
+			endTime = end
+		}
+
+		chapters = append(chapters, VideoChapter{
+			Title:     title,
+			StartTime: startTime,
+			EndTime:   endTime,
+		})
+	}
+
+	if len(chapters) == 0 {
+		return nil
+	}
+
+	return chapters
 }
 
 func isSkippableYtDlpOutput(output string) bool {
@@ -1077,6 +1315,13 @@ type VideoMetadata struct {
 	UploadDate  string // YYYY-MM-DD
 	Duration    int    // seconds
 	Thumbnail   string
+	Chapters    []VideoChapter
+}
+
+type VideoChapter struct {
+	Title     string
+	StartTime float64
+	EndTime   float64
 }
 
 // fetchVideoMetadata fetches video metadata using yt-dlp
@@ -1130,6 +1375,23 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 	videoFile := files[0]
 	nfoPath := strings.TrimSuffix(videoFile, filepath.Ext(videoFile)) + ".nfo"
 
+	chaptersXML := ""
+	if len(metadata.Chapters) > 0 {
+		chapterLines := make([]string, 0, len(metadata.Chapters)+2)
+		chapterLines = append(chapterLines, "  <chapters>")
+		for _, chapter := range metadata.Chapters {
+			chapterLines = append(chapterLines,
+				"    <chapter>",
+				"      <title>"+escapeXML(chapter.Title)+"</title>",
+				"      <start>"+fmt.Sprintf("%.3f", chapter.StartTime)+"</start>",
+				"      <end>"+fmt.Sprintf("%.3f", chapter.EndTime)+"</end>",
+				"    </chapter>",
+			)
+		}
+		chapterLines = append(chapterLines, "  </chapters>")
+		chaptersXML = "\n" + strings.Join(chapterLines, "\n")
+	}
+
 	// Create NFO XML content
 	nfoContent := `<?xml version="1.0" encoding="UTF-8"?>
 <movie>
@@ -1145,6 +1407,7 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
   <aired>` + metadata.UploadDate + `</aired>
   <runtime>` + fmt.Sprintf("%d", metadata.Duration/60) + `</runtime>
   <uniqueid type="youtube">` + metadata.ID + `</uniqueid>
+` + chaptersXML + `
 </movie>`
 
 	if err := os.WriteFile(nfoPath, []byte(nfoContent), 0644); err != nil {
