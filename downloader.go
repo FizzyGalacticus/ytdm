@@ -814,6 +814,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 			if err := os.Remove(path); err != nil {
 				log.Printf("Failed to remove %s: %v", path, err)
 			} else {
+				_ = storage.RemoveDownloadedVideo(channelID, trackedVideo.ID)
 				log.Printf("Pruned video file: %s (download date: %s)", path, trackedVideo.DownloadDate)
 			}
 		}
@@ -920,6 +921,7 @@ func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionD
 			if removeErr := os.Remove(path); removeErr != nil {
 				log.Printf("Failed to remove %s: %v", path, removeErr)
 			} else {
+				_ = storage.RemoveDownloadedVideo(videoID, trackedVideo.ID)
 				log.Printf("Pruned video file: %s (download date: %s)", path, trackedVideo.DownloadDate)
 				// Check if parent directory is now empty and remove it
 				parentDir := filepath.Dir(path)

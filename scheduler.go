@@ -144,6 +144,13 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 
 // cleanupOldVideos runs retention cleanup for all channels and videos in parallel
 func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, downloader *Downloader, storage *Storage) {
+	downloader.config.RLock()
+	downloadDir := downloader.config.DownloadDir
+	downloader.config.RUnlock()
+	if err := storage.ReconcileDownloadedVideos(downloadDir); err != nil {
+		log.Printf("Error reconciling downloaded video entries: %v", err)
+	}
+
 	if configPruningDisabled(downloader) {
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -321,6 +322,83 @@ func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 	}
 
 	return nil // Container not found
+}
+
+// ReconcileDownloadedVideos removes downloaded_videos entries that no longer
+// have a corresponding media file on disk.
+func (s *Storage) ReconcileDownloadedVideos(downloadDir string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	globalFileNames := []string{}
+	walkErr := filepath.Walk(downloadDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		globalFileNames = append(globalFileNames, info.Name())
+		return nil
+	})
+
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		return walkErr
+	}
+
+	changed := false
+
+	for i := range s.data.Channels {
+		channelDir := filepath.Join(downloadDir, sanitizeFilename(s.data.Channels[i].Name))
+		channelFileNames := []string{}
+		entries, err := os.ReadDir(channelDir)
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					channelFileNames = append(channelFileNames, entry.Name())
+				}
+			}
+		}
+
+		filtered := make([]DownloadedVideo, 0, len(s.data.Channels[i].DownloadedVideos))
+		for _, tracked := range s.data.Channels[i].DownloadedVideos {
+			if hasFileContainingID(channelFileNames, tracked.ID) {
+				filtered = append(filtered, tracked)
+			} else {
+				changed = true
+			}
+		}
+		s.data.Channels[i].DownloadedVideos = filtered
+	}
+
+	for i := range s.data.Videos {
+		filtered := make([]DownloadedVideo, 0, len(s.data.Videos[i].DownloadedVideos))
+		for _, tracked := range s.data.Videos[i].DownloadedVideos {
+			if hasFileContainingID(globalFileNames, tracked.ID) {
+				filtered = append(filtered, tracked)
+			} else {
+				changed = true
+			}
+		}
+		s.data.Videos[i].DownloadedVideos = filtered
+	}
+
+	if changed {
+		return s.save()
+	}
+
+	return nil
+}
+
+func hasFileContainingID(fileNames []string, videoID string) bool {
+	if videoID == "" {
+		return false
+	}
+
+	for _, name := range fileNames {
+		if strings.Contains(name, videoID) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // UpdateChannelDownloadedVideoPruning updates per-downloaded-video pruning behavior for a channel entry.

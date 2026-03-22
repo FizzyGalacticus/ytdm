@@ -102,6 +102,80 @@ func TestStorageVideoOperations(t *testing.T) {
 	}
 }
 
+func TestStorageReconcileDownloadedVideosRemovesOrphans(t *testing.T) {
+	root := t.TempDir()
+	dataFile := filepath.Join(root, "data.json")
+	downloadDir := filepath.Join(root, "downloads")
+
+	storage, err := NewStorage(dataFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	channel := Channel{
+		ID:   "channel-1",
+		Name: "Techno Tim",
+		URL:  "https://youtube.com/@TechnoTim",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "keep-chan", Title: "Keep Channel Video", DownloadDate: time.Now()},
+			{ID: "orphan-chan", Title: "Orphan Channel Video", DownloadDate: time.Now()},
+		},
+	}
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	video := Video{
+		ID:    "video-1",
+		Title: "Tracked Video",
+		URL:   "https://youtu.be/example",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "keep-vid", Title: "Keep Individual Video", DownloadDate: time.Now()},
+			{ID: "orphan-vid", Title: "Orphan Individual Video", DownloadDate: time.Now()},
+		},
+	}
+	if err := storage.AddVideo(video); err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
+
+	channelDir := filepath.Join(downloadDir, sanitizeFilename(channel.Name))
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(channelDir, "Some Title-keep-chan.mp4"), []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	otherDir := filepath.Join(downloadDir, "Misc")
+	if err := os.MkdirAll(otherDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "Another Title-keep-vid.mp4"), []byte("x"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if err := storage.ReconcileDownloadedVideos(downloadDir); err != nil {
+		t.Fatalf("ReconcileDownloadedVideos() error = %v", err)
+	}
+
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if len(channels[0].DownloadedVideos) != 1 || channels[0].DownloadedVideos[0].ID != "keep-chan" {
+		t.Fatalf("expected only keep-chan to remain, got %#v", channels[0].DownloadedVideos)
+	}
+
+	videos := storage.GetVideos()
+	if len(videos) != 1 {
+		t.Fatalf("expected 1 video entry, got %d", len(videos))
+	}
+	if len(videos[0].DownloadedVideos) != 1 || videos[0].DownloadedVideos[0].ID != "keep-vid" {
+		t.Fatalf("expected only keep-vid to remain, got %#v", videos[0].DownloadedVideos)
+	}
+}
+
 func TestStorageVideoDownloadTracking(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
 
