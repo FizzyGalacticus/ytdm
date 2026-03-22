@@ -180,6 +180,18 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 	}
 	id := parts[3]
 
+	// Handle channel downloaded-video subresource: /api/channels/{id}/videos/{videoId}
+	if len(parts) >= 6 && parts[4] == "videos" {
+		videoID := parts[5]
+		switch r.Method {
+		case http.MethodPut:
+			api.updateChannelDownloadedVideo(w, r, id, videoID)
+		default:
+			api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+		return
+	}
+
 	switch r.Method {
 	case http.MethodDelete:
 		var target *Channel
@@ -212,10 +224,35 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// updateChannel updates channel settings (retention days, cutoff date, video quality, video format, shorts preference)
+// updateChannelDownloadedVideo updates per-downloaded-video settings for a channel entry.
+func (api *APIServer) updateChannelDownloadedVideo(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
+	var updateData struct {
+		DisablePruning bool `json:"disable_pruning"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := api.storage.UpdateChannelDownloadedVideoPruning(channelID, videoID, updateData.DisablePruning); err != nil {
+		api.sendError(w, http.StatusNotFound, fmt.Sprintf("Failed to update channel downloaded video: %v", err))
+		return
+	}
+
+	log.Printf("Channel downloaded video updated via API: channel=%s video=%s disable_pruning=%v", channelID, videoID, updateData.DisablePruning)
+	api.sendSuccess(w, map[string]interface{}{
+		"channel_id":      channelID,
+		"video_id":        videoID,
+		"disable_pruning": updateData.DisablePruning,
+	})
+}
+
+// updateChannel updates channel settings (retention days, pruning, cutoff date, video quality, video format, shorts preference)
 func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id string) {
 	var updateData struct {
 		RetentionDays  int       `json:"retention_days"`
+		DisablePruning bool      `json:"disable_pruning"`
 		CutoffDate     time.Time `json:"cutoff_date"`
 		VideoQuality   string    `json:"video_quality"`
 		VideoFormat    string    `json:"video_format"`
@@ -227,7 +264,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
+	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.DisablePruning, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel: %v", err))
 		return
 	}
@@ -305,7 +342,7 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	api.sendSuccess(w, video)
 }
 
-// handleVideoByID handles DELETE for a specific video
+// handleVideoByID handles DELETE and PUT for a specific video
 func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 	// Extract ID from path
 	parts := strings.Split(r.URL.Path, "/")
@@ -340,9 +377,35 @@ func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("Video removed via API: %s", id)
 		api.sendSuccess(w, map[string]string{"id": id})
+	case http.MethodPut:
+		api.updateVideo(w, r, id)
 	default:
 		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+// updateVideo updates video settings (retention days, pruning, video quality, video format, shorts preference)
+func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id string) {
+	var updateData struct {
+		RetentionDays  int    `json:"retention_days"`
+		DisablePruning bool   `json:"disable_pruning"`
+		VideoQuality   string `json:"video_quality"`
+		VideoFormat    string `json:"video_format"`
+		DownloadShorts bool   `json:"download_shorts"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if err := api.storage.UpdateVideo(id, updateData.RetentionDays, updateData.DisablePruning, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video: %v", err))
+		return
+	}
+
+	log.Printf("Video updated via API: %s", id)
+	api.sendSuccess(w, map[string]string{"id": id})
 }
 
 // handleConfig handles GET and PUT for configuration
@@ -362,10 +425,12 @@ func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 	configData := map[string]interface{}{
 		"check_interval_seconds":   api.config.CheckInterval,
 		"retention_days":           api.config.RetentionDays,
+		"disable_pruning":          api.config.DisablePruning,
 		"download_dir":             api.config.DownloadDir,
 		"file_name_pattern":        api.config.FileNamePattern,
 		"api_port":                 api.config.APIPort,
 		"max_concurrent_downloads": api.config.MaxConcurrent,
+		"default_video_format":     api.config.DefaultVideoFormat,
 		"yt_dlp": map[string]interface{}{
 			"path":                             api.config.YtDlp.Path,
 			"update_interval_seconds":          api.config.YtDlp.UpdateInterval,
@@ -395,6 +460,9 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if val, ok := updates["retention_days"].(float64); ok {
 		api.config.RetentionDays = int(val)
 	}
+	if val, ok := updates["disable_pruning"].(bool); ok {
+		api.config.DisablePruning = val
+	}
 	if val, ok := updates["download_dir"].(string); ok {
 		api.config.DownloadDir = val
 	}
@@ -403,6 +471,9 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if val, ok := updates["max_concurrent_downloads"].(float64); ok {
 		api.config.MaxConcurrent = int(val)
+	}
+	if val, ok := updates["default_video_format"].(string); ok {
+		api.config.DefaultVideoFormat = val
 	}
 	if ytDlpRaw, ok := updates["yt_dlp"].(map[string]interface{}); ok {
 		if val, ok := ytDlpRaw["path"].(string); ok {

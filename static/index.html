@@ -139,6 +139,14 @@
                                         </label>
                                     </div>
                                 </div>
+                                <div class="col-md-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="channelDisablePruning">
+                                        <label class="form-check-label" for="channelDisablePruning">
+                                            <small>Keep indefinitely (disable pruning)</small>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </form>
                     </div>
@@ -197,6 +205,14 @@
                                         </label>
                                     </div>
                                 </div>
+                                <div class="col-md-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="videoDisablePruning">
+                                        <label class="form-check-label" for="videoDisablePruning">
+                                            <small>Keep indefinitely (disable pruning)</small>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </form>
                     </div>
@@ -233,6 +249,14 @@
                         <div class="col-md-6">
                             <label for="retentionDays" class="form-label">Retention Days</label>
                             <input type="number" class="form-control" id="retentionDays" min="1" required>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="disablePruning">
+                                <label class="form-check-label" for="disablePruning">
+                                    Disable all pruning globally
+                                </label>
+                            </div>
                         </div>
                         <div class="col-md-6">
                             <label for="downloadDir" class="form-label">Download Directory</label>
@@ -402,6 +426,14 @@
                             <input type="number" class="form-control" id="editChannelRetention" min="1" required>
                         </div>
                         <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editChannelDisablePruning">
+                                <label class="form-check-label" for="editChannelDisablePruning">
+                                    Keep indefinitely (disable pruning)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
                             <label for="editChannelCutoffDate" class="form-label">Cutoff Date</label>
                             <input type="date" class="form-control" id="editChannelCutoffDate">
                             <small class="text-muted">Ignore older videos</small>
@@ -439,6 +471,72 @@
                 <div class="modal-footer border-secondary">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-primary" id="saveChannelEditsBtn">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Video Modal -->
+    <div class="modal fade" id="editVideoModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">Edit Video</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editVideoForm">
+                        <input type="hidden" id="editVideoId">
+                        <div class="mb-3">
+                            <label for="editVideoTitle" class="form-label">Video Title</label>
+                            <input type="text" class="form-control" id="editVideoTitle" disabled>
+                            <small class="text-muted">Cannot be changed</small>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editVideoRetention" class="form-label">Retention Days</label>
+                            <input type="number" class="form-control" id="editVideoRetention" min="1" required>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editVideoDisablePruning">
+                                <label class="form-check-label" for="editVideoDisablePruning">
+                                    Keep indefinitely (disable pruning)
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editVideoQuality" class="form-label">Video Quality</label>
+                            <select class="form-control" id="editVideoQuality">
+                                <option value="">Default Quality</option>
+                                <option value="best">Best</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editVideoFormat" class="form-label">Video Format</label>
+                            <select class="form-control" id="editVideoFormat">
+                                <option value="">Use Global Default</option>
+                                <option value="mp4">MP4</option>
+                                <option value="webm">WebM</option>
+                                <option value="mkv">MKV</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editVideoDownloadShorts">
+                                <label class="form-check-label" for="editVideoDownloadShorts">
+                                    Download short-format videos
+                                </label>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveVideoEditsBtn">Save Changes</button>
                 </div>
             </div>
         </div>

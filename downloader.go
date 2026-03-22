@@ -56,6 +56,8 @@ type DownloadResult struct {
 	Downloaded bool
 	Skipped    bool
 	SkipReason string
+	VideoID    string
+	VideoTitle string
 }
 
 // NewDownloader creates a new Downloader instance
@@ -211,8 +213,6 @@ func addJitterSeconds(baseSeconds int, jitterPercent float64) int {
 
 // GetChannelVideos retrieves metadata for all videos from a channel
 func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]VideoInfo, error) {
-	log.Printf("Fetching video list from channel: %s", channelURL)
-
 	// Use yt-dlp to get video information in JSON format
 	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{
 		"--dump-json",
@@ -252,7 +252,6 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 		}
 	}
 
-	log.Printf("Found %d new videos from channel", len(videos))
 	return videos, nil
 }
 
@@ -260,8 +259,6 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 // This is much faster than yt-dlp but may miss videos in edge cases
 // Returns VideoInfo for videos published after 'since' time
 func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time) ([]VideoInfo, error) {
-	log.Printf("Fetching video list from channel via RSS: %s", channelURL)
-
 	resolvedChannelID, err := resolveRSSChannelID(channelID, channelURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract channel ID: %v", err)
@@ -321,7 +318,6 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 		}
 	}
 
-	log.Printf("Found %d new videos from channel RSS (channel_id: %s)", len(videos), resolvedChannelID)
 	return videos, nil
 }
 
@@ -373,8 +369,6 @@ func extractVideoIDFromRSSEntry(entry RSSEntry) string {
 
 // GetVideoInfo retrieves metadata for a specific video
 func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
-	log.Printf("Fetching video info: %s", videoURL)
-
 	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{"--dump-json", videoURL})
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp failed: %v, stderr: %s", err, stderr.String())
@@ -458,23 +452,11 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool) (*DownloadResult, error) {
 	result := &DownloadResult{}
 
-	// Create channel subdirectory
+	// Compute channel directory path (but don't create yet)
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
-	if err := os.MkdirAll(channelDir, 0755); err != nil {
-		return result, fmt.Errorf("failed to create directory: %v", err)
-	}
-
-	// First, fetch metadata with yt-dlp
-	metadata, err := d.fetchVideoMetadata(videoURL)
-	if err != nil {
-		log.Printf("Warning: could not fetch metadata for %s: %v", videoURL, err)
-		metadata = nil // Continue with download even if metadata fails
-	}
 
 	videoID := strings.TrimSpace(expectedVideoID)
-	if videoID == "" && metadata != nil {
-		videoID = strings.TrimSpace(metadata.ID)
-	}
+	result.VideoID = videoID
 
 	beforeCount := -1
 	if videoID != "" {
@@ -512,13 +494,17 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	cmdArgs = append(cmdArgs,
 		"--match-filters", matchFilter,
 		"--embed-chapters",
+		"--write-info-json",
+		"--print", "after_move:%(id)s\t%(title)s",
 		videoURL,
 	)
 
 	// Try without cookies first; on auth errors retry with cookies if configured
 	var runErr error
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	tryDownload := func(withCookies bool) {
+		stdout.Reset()
 		stderr.Reset()
 		var cmd *exec.Cmd
 		if withCookies {
@@ -526,6 +512,7 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		} else {
 			cmd = d.buildYtDlpCommandNoCookies(cmdArgs...)
 		}
+		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
 		runErr = cmd.Run()
 	}
@@ -555,6 +542,17 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		}
 	}
 
+	printedID, printedTitle := parseDownloadedVideoInfo(stdout.String())
+	if printedID != "" {
+		result.VideoID = printedID
+		if videoID == "" {
+			videoID = printedID
+		}
+	}
+	if printedTitle != "" {
+		result.VideoTitle = printedTitle
+	}
+
 	if videoID != "" {
 		afterCount := d.countVideoFiles(channelDir, videoID)
 		if beforeCount >= 0 && afterCount <= beforeCount {
@@ -571,14 +569,94 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	log.Printf("Successfully downloaded video: %s", videoURL)
 	result.Downloaded = true
 
-	// Generate NFO file if metadata was available
-	if metadata != nil {
-		if err := d.generateNFOFile(channelDir, metadata); err != nil {
+	if result.VideoID != "" {
+		if metadata, metaErr := d.loadMetadataFromInfoJSON(channelDir, result.VideoID); metaErr != nil {
+			log.Printf("Warning: failed to load info json for NFO (%s): %v", result.VideoID, metaErr)
+		} else if err := d.generateNFOFile(channelDir, metadata); err != nil {
 			log.Printf("Warning: failed to generate NFO file: %v", err)
 		}
 	}
 
 	return result, nil
+}
+
+func parseDownloadedVideoInfo(output string) (string, string) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, "\t", 2)
+		id := strings.TrimSpace(parts[0])
+		title := ""
+		if len(parts) > 1 {
+			title = strings.TrimSpace(parts[1])
+		}
+
+		if id != "" {
+			return id, title
+		}
+	}
+
+	return "", ""
+}
+
+func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*VideoMetadata, error) {
+	if videoID == "" {
+		return nil, fmt.Errorf("empty video id")
+	}
+
+	pattern := filepath.Join(channelDir, "*"+videoID+"*.info.json")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search info json: %v", err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no info json file found for %s", videoID)
+	}
+
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to read info json: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse info json: %v", err)
+	}
+
+	metadata := &VideoMetadata{
+		ID:          videoID,
+		Title:       strings.TrimSpace(fmt.Sprintf("%v", raw["title"])),
+		Description: strings.TrimSpace(fmt.Sprintf("%v", raw["description"])),
+		Uploader:    strings.TrimSpace(fmt.Sprintf("%v", raw["uploader"])),
+	}
+
+	if uploadDate, ok := raw["upload_date"].(string); ok && len(uploadDate) >= 8 {
+		metadata.UploadDate = uploadDate[:4] + "-" + uploadDate[4:6] + "-" + uploadDate[6:8]
+	}
+
+	if duration, ok := raw["duration"].(float64); ok {
+		metadata.Duration = int(duration)
+	}
+
+	if thumbnail, ok := raw["thumbnail"].(string); ok {
+		metadata.Thumbnail = strings.TrimSpace(thumbnail)
+	}
+
+	if metadata.UploadDate == "" {
+		metadata.UploadDate = time.Now().Format("2006-01-02")
+	}
+	if metadata.Title == "" {
+		metadata.Title = videoID
+	}
+	if metadata.Uploader == "" {
+		metadata.Uploader = "unknown"
+	}
+
+	return metadata, nil
 }
 
 func (d *Downloader) countVideoFiles(channelDir, videoID string) int {
@@ -673,7 +751,6 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		return nil // Channel directory doesn't exist yet
 	}
 
-	log.Printf("Cleaning old videos for channel %s (retention: %d days)", channelName, retentionDays)
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
 
 	// Get list of downloaded videos to check against
@@ -706,7 +783,6 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 		// If file doesn't exist but is recorded, remove the entry
 		if !fileFound {
-			log.Printf("Removing stale entry for video %s (file not found)", vid.ID)
 			storage.RemoveDownloadedVideo(channelID, vid.ID)
 		}
 	}
@@ -725,15 +801,20 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 
 		baseName := filepath.Base(path)
-		foundDownloadDate, tracked := findTrackedDownloadDate(baseName, trackedVideos)
-		if !tracked || foundDownloadDate.IsZero() {
+		trackedVideo, tracked := findTrackedVideo(baseName, trackedVideos)
+		if !tracked || trackedVideo.DownloadDate.IsZero() {
 			return nil
 		}
 
-		if foundDownloadDate.Before(cutoffTime) {
-			log.Printf("Removing old tracked video: %s (download date: %s)", path, foundDownloadDate)
+		if trackedVideo.DisablePruning {
+			return nil
+		}
+
+		if trackedVideo.DownloadDate.Before(cutoffTime) {
 			if err := os.Remove(path); err != nil {
 				log.Printf("Failed to remove %s: %v", path, err)
+			} else {
+				log.Printf("Pruned video file: %s (download date: %s)", path, trackedVideo.DownloadDate)
 			}
 		}
 
@@ -757,12 +838,11 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 // CleanOldVideosForVideo removes videos older than the retention period for a specific individual video entry
 // using download dates stored in persistence rather than file modification times
 // Also removes stale entries from the downloaded list if files no longer exist
-func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentionDays int, storage *Storage) error {
+func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionDays int, storage *Storage) error {
 	if retentionDays <= 0 {
 		return nil
 	}
 
-	log.Printf("Cleaning old videos for individual video %s (retention: %d days)", videoTitle, retentionDays)
 	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
 
 	// Get the video entry to check its downloaded videos
@@ -809,7 +889,6 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 
 		// If file doesn't exist but is recorded, remove the entry
 		if !fileFound {
-			log.Printf("Removing stale entry for video %s (file not found)", vid.ID)
 			storage.RemoveDownloadedVideo(videoID, vid.ID)
 		}
 	}
@@ -828,16 +907,20 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 		}
 
 		baseName := filepath.Base(path)
-		foundDownloadDate, tracked := findTrackedDownloadDate(baseName, trackedVideos)
-		if !tracked || foundDownloadDate.IsZero() {
+		trackedVideo, tracked := findTrackedVideo(baseName, trackedVideos)
+		if !tracked || trackedVideo.DownloadDate.IsZero() {
 			return nil
 		}
 
-		if foundDownloadDate.Before(cutoffTime) {
-			log.Printf("Removing old tracked video: %s (download date: %s)", path, foundDownloadDate)
+		if trackedVideo.DisablePruning {
+			return nil
+		}
+
+		if trackedVideo.DownloadDate.Before(cutoffTime) {
 			if removeErr := os.Remove(path); removeErr != nil {
 				log.Printf("Failed to remove %s: %v", path, removeErr)
 			} else {
+				log.Printf("Pruned video file: %s (download date: %s)", path, trackedVideo.DownloadDate)
 				// Check if parent directory is now empty and remove it
 				parentDir := filepath.Dir(path)
 				if parentDir != d.config.DownloadDir {
@@ -857,14 +940,14 @@ func (d *Downloader) CleanOldVideosForVideo(videoTitle, videoID string, retentio
 	return err
 }
 
-func findTrackedDownloadDate(baseName string, videos []DownloadedVideo) (time.Time, bool) {
+func findTrackedVideo(baseName string, videos []DownloadedVideo) (DownloadedVideo, bool) {
 	for _, vid := range videos {
 		if strings.Contains(baseName, vid.ID) {
-			return vid.DownloadDate, true
+			return vid, true
 		}
 	}
 
-	return time.Time{}, false
+	return DownloadedVideo{}, false
 }
 
 // RemoveChannelResources deletes all downloaded files/resources for a channel.

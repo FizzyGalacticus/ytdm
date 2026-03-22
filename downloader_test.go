@@ -914,6 +914,54 @@ func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
 	}
 }
 
+func TestCleanOldVideosForChannelRespectsDownloadedVideoDisablePruning(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	channelName := "Tracked Channel"
+	channelDir := filepath.Join(tmpDir, sanitizeFilename(channelName))
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	keptOld := filepath.Join(channelDir, "tracked-old-keep001.mp4")
+	if err := os.WriteFile(keptOld, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", keptOld, err)
+	}
+
+	oldTime := time.Now().AddDate(0, 0, -10)
+	if err := os.Chtimes(keptOld, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes(keptOld) error = %v", err)
+	}
+
+	err = storage.AddChannel(Channel{
+		ID:   "channel-keep",
+		Name: channelName,
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "keep001", Title: "Keep me", DownloadDate: oldTime, DisablePruning: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-keep", 7, storage); err != nil {
+		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
+	}
+
+	if _, err := os.Stat(keptOld); err != nil {
+		t.Fatalf("expected kept old file to remain, stat err = %v", err)
+	}
+}
+
 func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	config := DefaultConfig()

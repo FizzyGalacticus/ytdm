@@ -55,6 +55,7 @@ All configuration can be managed through the web UI or by editing `data/config.j
 {
   "check_interval_seconds": "5m0s",
   "retention_days": 7,
+  "disable_pruning": false,
   "download_dir": "../downloads",
   "file_name_pattern": "%(title)s-%(id)s.%(ext)s",
   "max_concurrent_downloads": 3,
@@ -77,6 +78,7 @@ All configuration can be managed through the web UI or by editing `data/config.j
 
 - **check_interval_seconds**: How often to check for new videos (default: `5m0s`)
 - **retention_days**: Default retention period in days (default: 7)
+- **disable_pruning**: Disable all automatic pruning globally (default: false)
 - **max_concurrent_downloads**: Number of simultaneous downloads (default: 3)
 - **yt_dlp**: Settings for yt-dlp
   - **path**: Path to yt-dlp executable
@@ -93,7 +95,10 @@ All configuration can be managed through the web UI or by editing `data/config.j
 Each channel can override the global retention with its own retention period and cutoff date:
 
 - **Retention Days**: Keep videos for N days (0 = use global setting)
+- **Keep indefinitely (disable pruning)**: Skip automatic pruning for this channel/video entry
 - **Cutoff Date**: Only download videos published on or after this date
+
+Channel monitoring only downloads videos that are newer than `now - retention_days` (using channel retention, or global retention when channel retention is unset).
 
 ## Cookie Support
 

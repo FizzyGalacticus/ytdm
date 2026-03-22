@@ -251,6 +251,42 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	}
 }
 
+func TestStorageUpdateChannelDownloadedVideoPruning(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	channel := Channel{
+		ID:   "channel-prune-test",
+		Name: "Prune Toggle Channel",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "vid123", Title: "Video 123", DownloadDate: time.Now().AddDate(0, 0, -5)},
+		},
+	}
+
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	if err := storage.UpdateChannelDownloadedVideoPruning(channel.ID, "vid123", true); err != nil {
+		t.Fatalf("UpdateChannelDownloadedVideoPruning() error = %v", err)
+	}
+
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Fatalf("Expected 1 channel, got %d", len(channels))
+	}
+	if len(channels[0].DownloadedVideos) != 1 {
+		t.Fatalf("Expected 1 downloaded video, got %d", len(channels[0].DownloadedVideos))
+	}
+	if !channels[0].DownloadedVideos[0].DisablePruning {
+		t.Fatalf("Expected downloaded video pruning to be disabled")
+	}
+}
+
 func TestStorageUpdateChannel(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
 
@@ -272,12 +308,13 @@ func TestStorageUpdateChannel(t *testing.T) {
 
 	// Update channel settings
 	newRetention := 14
+	newDisablePruning := true
 	newCutoff := time.Now().AddDate(0, 0, -14)
 	newQuality := "1080"
 	newFormat := "webm"
 	newShorts := true
 
-	err = storage.UpdateChannel(channel.ID, newRetention, newCutoff, newQuality, newFormat, newShorts)
+	err = storage.UpdateChannel(channel.ID, newRetention, newDisablePruning, newCutoff, newQuality, newFormat, newShorts)
 	if err != nil {
 		t.Errorf("Failed to update channel: %v", err)
 	}
@@ -291,6 +328,9 @@ func TestStorageUpdateChannel(t *testing.T) {
 	updated := channels[0]
 	if updated.RetentionDays != newRetention {
 		t.Errorf("Expected retention days %d, got %d", newRetention, updated.RetentionDays)
+	}
+	if updated.DisablePruning != newDisablePruning {
+		t.Errorf("Expected disable pruning %v, got %v", newDisablePruning, updated.DisablePruning)
 	}
 	if updated.VideoQuality != newQuality {
 		t.Errorf("Expected quality %s, got %s", newQuality, updated.VideoQuality)
@@ -334,6 +374,61 @@ func TestStorageUpdateVideoLastChecked(t *testing.T) {
 
 	if videos[0].LastChecked.IsZero() {
 		t.Error("Last checked time should not be zero")
+	}
+}
+
+func TestStorageUpdateVideo(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	video := Video{
+		ID:            "video-edit-test",
+		Title:         "Editable Video",
+		URL:           "https://youtube.com/watch?v=video-edit-test",
+		RetentionDays: 7,
+		VideoQuality:  "720",
+		VideoFormat:   "mp4",
+	}
+
+	if err := storage.AddVideo(video); err != nil {
+		t.Fatalf("Failed to add video: %v", err)
+	}
+
+	newRetention := 30
+	newDisablePruning := true
+	newQuality := "1080"
+	newFormat := "webm"
+	newShorts := true
+
+	err = storage.UpdateVideo(video.ID, newRetention, newDisablePruning, newQuality, newFormat, newShorts)
+	if err != nil {
+		t.Errorf("Failed to update video: %v", err)
+	}
+
+	videos := storage.GetVideos()
+	if len(videos) != 1 {
+		t.Fatalf("Expected 1 video, got %d", len(videos))
+	}
+
+	updated := videos[0]
+	if updated.RetentionDays != newRetention {
+		t.Errorf("Expected retention days %d, got %d", newRetention, updated.RetentionDays)
+	}
+	if updated.DisablePruning != newDisablePruning {
+		t.Errorf("Expected disable pruning %v, got %v", newDisablePruning, updated.DisablePruning)
+	}
+	if updated.VideoQuality != newQuality {
+		t.Errorf("Expected quality %s, got %s", newQuality, updated.VideoQuality)
+	}
+	if updated.VideoFormat != newFormat {
+		t.Errorf("Expected format %s, got %s", newFormat, updated.VideoFormat)
+	}
+	if updated.DownloadShorts != newShorts {
+		t.Errorf("Expected shorts %v, got %v", newShorts, updated.DownloadShorts)
 	}
 }
 

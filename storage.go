@@ -12,9 +12,10 @@ import (
 
 // DownloadedVideo tracks a downloaded video with its download date
 type DownloadedVideo struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	DownloadDate time.Time `json:"download_date"`
+	ID             string    `json:"id"`
+	Title          string    `json:"title"`
+	DownloadDate   time.Time `json:"download_date"`
+	DisablePruning bool      `json:"disable_pruning"`
 }
 
 // Channel represents a YouTube channel to monitor
@@ -24,6 +25,7 @@ type Channel struct {
 	Name             string            `json:"name"`
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
+	DisablePruning   bool              `json:"disable_pruning"`
 	CutoffDate       time.Time         `json:"cutoff_date"`          // Don't download videos published before this date
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
@@ -40,6 +42,7 @@ type Video struct {
 	Title            string            `json:"title"`
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
+	DisablePruning   bool              `json:"disable_pruning"`
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
@@ -166,14 +169,15 @@ func (s *Storage) UpdateChannelLastChecked(id string, t time.Time) error {
 	return nil
 }
 
-// UpdateChannel updates retention days, cutoff date, video quality, video format, and shorts preference for a channel
-func (s *Storage) UpdateChannel(id string, retentionDays int, cutoffDate time.Time, videoQuality, videoFormat string, downloadShorts bool) error {
+// UpdateChannel updates retention days, pruning behavior, cutoff date, video quality, video format, and shorts preference for a channel
+func (s *Storage) UpdateChannel(id string, retentionDays int, disablePruning bool, cutoffDate time.Time, videoQuality, videoFormat string, downloadShorts bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for i := range s.data.Channels {
 		if s.data.Channels[i].ID == id {
 			s.data.Channels[i].RetentionDays = retentionDays
+			s.data.Channels[i].DisablePruning = disablePruning
 			s.data.Channels[i].CutoffDate = cutoffDate
 			s.data.Channels[i].VideoQuality = videoQuality
 			s.data.Channels[i].VideoFormat = videoFormat
@@ -319,6 +323,29 @@ func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 	return nil // Container not found
 }
 
+// UpdateChannelDownloadedVideoPruning updates per-downloaded-video pruning behavior for a channel entry.
+func (s *Storage) UpdateChannelDownloadedVideoPruning(channelID, videoID string, disablePruning bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+
+		for j := range s.data.Channels[i].DownloadedVideos {
+			if s.data.Channels[i].DownloadedVideos[j].ID == videoID {
+				s.data.Channels[i].DownloadedVideos[j].DisablePruning = disablePruning
+				return s.save()
+			}
+		}
+
+		return fmt.Errorf("downloaded video %s not found in channel %s", videoID, channelID)
+	}
+
+	return fmt.Errorf("channel %s not found", channelID)
+}
+
 // GetVideos returns all videos
 func (s *Storage) GetVideos() []Video {
 	s.mu.RLock()
@@ -375,6 +402,25 @@ func (s *Storage) UpdateVideoLastChecked(id string, t time.Time) error {
 	for i := range s.data.Videos {
 		if s.data.Videos[i].ID == id {
 			s.data.Videos[i].LastChecked = t
+			return s.save()
+		}
+	}
+
+	return nil
+}
+
+// UpdateVideo updates retention, pruning behavior, quality, format, and shorts preference for a video.
+func (s *Storage) UpdateVideo(id string, retentionDays int, disablePruning bool, videoQuality, videoFormat string, downloadShorts bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Videos {
+		if s.data.Videos[i].ID == id {
+			s.data.Videos[i].RetentionDays = retentionDays
+			s.data.Videos[i].DisablePruning = disablePruning
+			s.data.Videos[i].VideoQuality = videoQuality
+			s.data.Videos[i].VideoFormat = videoFormat
+			s.data.Videos[i].DownloadShorts = downloadShorts
 			return s.save()
 		}
 	}

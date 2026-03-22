@@ -102,6 +102,9 @@ async function loadChannels() {
                     const formatText = ch.video_format 
                         ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
                         : '';
+                    const pruningText = ch.disable_pruning
+                        ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
+                        : '';
                     const hasError = ch.last_error && ch.last_error.trim().length > 0;
                     const errorBadge = hasError 
                         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
@@ -129,6 +132,7 @@ async function loadChannels() {
                                 ${cutoffText}
                                 ${qualityText}
                                 ${formatText}
+                                ${pruningText}
                                 ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${ch.url}</small><br>
@@ -139,7 +143,7 @@ async function loadChannels() {
                                 <button class="btn btn-info btn-sm me-2" onclick="showChannelVideos('${ch.id}', '${escapeHtml(ch.name)}')">
                                     <i class="bi bi-film"></i> Videos
                                 </button>
-                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
+                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
                                     <i class="bi bi-pencil"></i> Edit
                                 </button>
                                 <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
@@ -168,6 +172,9 @@ async function loadVideos() {
             } else {
                 document.getElementById('videosList').innerHTML = videos.map((vid, idx) => {
                     const hasError = vid.last_error && vid.last_error.trim().length > 0;
+                    const pruningText = vid.disable_pruning
+                        ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
+                        : '';
                     const errorBadge = hasError 
                         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
                         : '';
@@ -193,15 +200,21 @@ async function loadVideos() {
                                 <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
                                 ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
                                 ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
+                                ${pruningText}
                                 ${vid.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${vid.url}</small><br>
                                 <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
                                 ${errorSection}
                             </div>
-                            <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
-                                <i class="bi bi-trash"></i> Remove
-                            </button>
+                            <div class="ms-3">
+                                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}', ${vid.download_shorts})">
+                                    <i class="bi bi-pencil"></i> Edit
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
+                                    <i class="bi bi-trash"></i> Remove
+                                </button>
+                            </div>
                         </div>
                     `;
                 }).join('');
@@ -227,6 +240,7 @@ async function loadConfig() {
             document.getElementById('checkIntervalS').value = checkInterval.seconds;
             
             document.getElementById('retentionDays').value = config.retention_days;
+            document.getElementById('disablePruning').checked = !!config.disable_pruning;
             document.getElementById('downloadDir').value = config.download_dir;
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
@@ -358,8 +372,17 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const quality = document.getElementById('channelQuality').value;
     const format = document.getElementById('channelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('channelDownloadShorts').checked;
+    const disablePruning = document.getElementById('channelDisablePruning').checked;
 
-    const channelData = { name, url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts };
+    const channelData = {
+        name,
+        url,
+        retention_days: retention,
+        disable_pruning: disablePruning,
+        video_quality: quality,
+        video_format: format,
+        download_shorts: downloadShorts
+    };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
     }
@@ -446,6 +469,7 @@ async function showChannelVideos(channelId, channelName) {
                                 <strong>${video.title || video.id}</strong>
                                 ${video.title ? `<br><small class="text-muted font-monospace">${video.id}</small>` : ''}
                             </div>
+                            ${video.disable_pruning ? '<span class="badge bg-warning text-dark mb-1">Keep Indefinitely</span><br>' : ''}
                             <small class="text-muted">
                                 <i class="bi bi-calendar"></i> Downloaded: ${formatDate(video.download_date)}
                             </small>
@@ -454,6 +478,10 @@ async function showChannelVideos(channelId, channelName) {
                             <a href="https://www.youtube.com/watch?v=${video.id}" target="_blank" class="btn btn-sm btn-outline-primary me-2">
                                 <i class="bi bi-youtube"></i> Watch
                             </a>
+                            <button class="btn btn-sm ${video.disable_pruning ? 'btn-outline-warning' : 'btn-outline-secondary'}" onclick="setChannelVideoPruning('${channelId}', '${video.id}', ${!video.disable_pruning})">
+                                <i class="bi ${video.disable_pruning ? 'bi-unlock' : 'bi-lock'}"></i>
+                                ${video.disable_pruning ? 'Enable Pruning' : 'Keep'}
+                            </button>
                         </div>
                     </div>
                 `).join('');
@@ -473,11 +501,33 @@ async function showChannelVideos(channelId, channelName) {
     }
 }
 
+// Toggle pruning for a downloaded video in a channel
+async function setChannelVideoPruning(channelId, videoId, disablePruning) {
+    try {
+        const response = await fetch(`${API_BASE}/channels/${channelId}/videos/${videoId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disable_pruning: disablePruning })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(disablePruning ? 'Video will be kept indefinitely' : 'Video pruning re-enabled');
+            await loadChannels();
+            await showChannelVideos(channelId, document.getElementById('channelVideosName').textContent);
+        } else {
+            showToast(data.message || 'Failed to update video pruning setting', true);
+        }
+    } catch (error) {
+        showToast('Failed to update video pruning setting', true);
+    }
+}
+
 // Open edit channel modal
-function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality, videoFormat, downloadShorts) {
+function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts) {
     document.getElementById('editChannelId').value = id;
     document.getElementById('editChannelName').value = name;
     document.getElementById('editChannelRetention').value = retentionDays || '';
+    document.getElementById('editChannelDisablePruning').checked = !!disablePruning;
     
     // Convert ISO date to YYYY-MM-DD format for date input
     if (cutoffDate && cutoffDate !== '0001-01-01T00:00:00Z') {
@@ -499,6 +549,7 @@ function openEditChannelModal(id, name, retentionDays, cutoffDate, videoQuality,
 document.getElementById('saveChannelEditsBtn').addEventListener('click', async () => {
     const id = document.getElementById('editChannelId').value;
     const retentionDays = parseInt(document.getElementById('editChannelRetention').value) || 0;
+    const disablePruning = document.getElementById('editChannelDisablePruning').checked;
     const cutoffDate = document.getElementById('editChannelCutoffDate').value;
     const videoQuality = document.getElementById('editChannelQuality').value;
     const videoFormat = document.getElementById('editChannelFormat').value; // Empty string = use global default
@@ -506,6 +557,7 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
 
     const updateData = {
         retention_days: retentionDays,
+        disable_pruning: disablePruning,
         video_quality: videoQuality,
         video_format: videoFormat,
         download_shorts: downloadShorts
@@ -546,12 +598,20 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
     const quality = document.getElementById('videoQuality').value;
     const format = document.getElementById('videoFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('videoDownloadShorts').checked;
+    const disablePruning = document.getElementById('videoDisablePruning').checked;
 
     try {
         const response = await fetch(`${API_BASE}/videos`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, retention_days: retention, video_quality: quality, video_format: format, download_shorts: downloadShorts })
+            body: JSON.stringify({
+                url,
+                retention_days: retention,
+                disable_pruning: disablePruning,
+                video_quality: quality,
+                video_format: format,
+                download_shorts: downloadShorts
+            })
         });
         const data = await response.json();
         if (data.success) {
@@ -586,6 +646,57 @@ async function removeVideo(id) {
     }
 }
 
+// Open edit video modal
+function openEditVideoModal(id, title, retentionDays, disablePruning, videoQuality, videoFormat, downloadShorts) {
+    document.getElementById('editVideoId').value = id;
+    document.getElementById('editVideoTitle').value = title;
+    document.getElementById('editVideoRetention').value = retentionDays || '';
+    document.getElementById('editVideoDisablePruning').checked = !!disablePruning;
+    document.getElementById('editVideoQuality').value = videoQuality || '';
+    document.getElementById('editVideoFormat').value = videoFormat || '';
+    document.getElementById('editVideoDownloadShorts').checked = !!downloadShorts;
+
+    const modal = new bootstrap.Modal(document.getElementById('editVideoModal'));
+    modal.show();
+}
+
+// Save video edits
+document.getElementById('saveVideoEditsBtn').addEventListener('click', async () => {
+    const id = document.getElementById('editVideoId').value;
+    const retentionDays = parseInt(document.getElementById('editVideoRetention').value) || 0;
+    const disablePruning = document.getElementById('editVideoDisablePruning').checked;
+    const videoQuality = document.getElementById('editVideoQuality').value;
+    const videoFormat = document.getElementById('editVideoFormat').value;
+    const downloadShorts = document.getElementById('editVideoDownloadShorts').checked;
+
+    const updateData = {
+        retention_days: retentionDays,
+        disable_pruning: disablePruning,
+        video_quality: videoQuality,
+        video_format: videoFormat,
+        download_shorts: downloadShorts
+    };
+
+    try {
+        const response = await fetch(`${API_BASE}/videos/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updateData)
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('Video updated successfully');
+            bootstrap.Modal.getInstance(document.getElementById('editVideoModal')).hide();
+            loadVideos();
+            loadStatus();
+        } else {
+            showToast(data.message || 'Failed to update video', true);
+        }
+    } catch (error) {
+        showToast('Failed to update video', true);
+    }
+});
+
 // Update config
 document.getElementById('configForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -610,6 +721,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     const config = {
         check_interval_seconds: checkIntervalStr,
         retention_days: parseInt(document.getElementById('retentionDays').value),
+        disable_pruning: document.getElementById('disablePruning').checked,
         download_dir: document.getElementById('downloadDir').value,
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),

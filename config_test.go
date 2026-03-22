@@ -18,6 +18,10 @@ func TestConfigDefaults(t *testing.T) {
 		t.Errorf("Expected default retention days 7, got %d", config.RetentionDays)
 	}
 
+	if config.DisablePruning {
+		t.Errorf("Expected default disable pruning false")
+	}
+
 	if config.MaxConcurrent != 3 {
 		t.Errorf("Expected default max concurrent 3, got %d", config.MaxConcurrent)
 	}
@@ -49,6 +53,7 @@ func TestConfigLoadSave(t *testing.T) {
 	// Create config
 	config := DefaultConfig()
 	config.RetentionDays = 30
+	config.DisablePruning = true
 	config.MaxConcurrent = 5
 	config.YtDlp.CookiesFile = "test_cookies.txt"
 	config.YtDlp.ExtractorSleepInterval = "5s"
@@ -70,6 +75,10 @@ func TestConfigLoadSave(t *testing.T) {
 	// Verify values
 	if loadedConfig.RetentionDays != 30 {
 		t.Errorf("Expected retention days 30, got %d", loadedConfig.RetentionDays)
+	}
+
+	if !loadedConfig.DisablePruning {
+		t.Errorf("Expected disable pruning true")
 	}
 
 	if loadedConfig.MaxConcurrent != 5 {

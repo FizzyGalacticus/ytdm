@@ -24,6 +24,7 @@ type Config struct {
 	sync.RWMutex
 	CheckInterval      string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
 	RetentionDays      int         `json:"retention_days"`
+	DisablePruning     bool        `json:"disable_pruning"`
 	DownloadDir        string      `json:"download_dir"`
 	FileNamePattern    string      `json:"file_name_pattern"`
 	APIPort            int         `json:"api_port"`
@@ -37,6 +38,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		CheckInterval:      "5m0s",
 		RetentionDays:      7,
+		DisablePruning:     false,
 		DownloadDir:        "/app/downloads",
 		FileNamePattern:    "%(upload_date>%Y-%m-%d)s %(title)s-%(id)s.%(ext)s",
 		APIPort:            8080,
