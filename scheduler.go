@@ -186,7 +186,7 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 			cleanupSemaphore <- struct{}{}
 			defer func() { <-cleanupSemaphore }()
 
-			if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, retentionDays, storage); err != nil {
+			if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, retentionDays, ch.CutoffDate, storage); err != nil {
 				log.Printf("Error cleaning old videos for channel %s: %v", ch.Name, err)
 			}
 		}(channel)
@@ -218,8 +218,16 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 			cleanupSemaphore <- struct{}{}
 			defer func() { <-cleanupSemaphore }()
 
-			if err := downloader.CleanOldVideosForVideo(video.Title, video.ID, retentionDays, storage); err != nil {
+			removed, err := downloader.CleanOldVideosForVideo(video.Title, video.ID, retentionDays, storage)
+			if err != nil {
 				log.Printf("Error cleaning old videos for video %s: %v", video.Title, err)
+				return
+			}
+
+			if removed {
+				if err := storage.RemoveVideo(video.ID); err != nil {
+					log.Printf("Error removing pruned video entry %s: %v", video.Title, err)
+				}
 			}
 		}(vid)
 	}
@@ -262,8 +270,9 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}()
 
-	// Only download channel videos that are new enough for the retention window.
-	// If a cutoff date is also set, use the stricter of the two constraints.
+	// Channel download eligibility requires both:
+	// 1) publish date after cutoff date
+	// 2) publish date within now-retention window
 	since := buildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
 
 	// Always try fast index (RSS) first, then fall back to yt-dlp
@@ -318,7 +327,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			skippedCount++
 		} else {
 			// Mark as downloaded
-			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title); err != nil {
+			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title, video.PublishTime); err != nil {
 				log.Printf("Failed to mark video as downloaded: %v", err)
 			}
 			downloadCount++
@@ -343,7 +352,7 @@ func buildChannelSinceTime(now time.Time, retentionDays int, cutoffDate time.Tim
 	var since time.Time
 
 	if retentionDays > 0 {
-		retentionThreshold := startOfDayUTC(now).AddDate(0, 0, -retentionDays)
+		retentionThreshold := retentionCutoff(startOfDayUTC(now), retentionDays)
 		since = retentionThreshold.Add(-time.Second)
 	}
 
@@ -438,6 +447,11 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		return nil
 	}
 
+	// Skip processing if already downloaded – no need to re-query API
+	if len(video.DownloadedVideos) > 0 {
+		return nil
+	}
+
 	// Always update last checked time when we attempt to process (but not on shutdown)
 	defer func() {
 		if ctx.Err() != nil {
@@ -446,24 +460,35 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		_ = storage.UpdateVideoLastChecked(video.ID, time.Now())
 	}()
 
-	precheckedVideoID := extractYouTubeVideoID(video.URL)
-	if precheckedVideoID != "" && storage.IsVideoDownloaded(video.ID, precheckedVideoID) {
-		return nil
+	// Try to use cached uploader info to avoid API call
+	var channelName string
+	var publishTime time.Time
+	if video.Uploader != "" {
+		channelName = strings.TrimSpace(video.Uploader)
+	}
+	if channelName == "" && video.UploaderID != "" {
+		channelName = strings.TrimSpace(video.UploaderID)
 	}
 
-	// Retention is based on download date, so don't skip based on publish date
-
-	// Resolve channel/uploader name from metadata so files are always grouped by channel.
-	videoInfo, err := downloader.GetVideoInfo(video.URL)
-	if err != nil {
-		log.Printf("Failed to resolve channel metadata for video %s: %v", video.Title, err)
-		return err
-	}
-
-	channelName := strings.TrimSpace(videoInfo.Uploader)
+	// Only query API if we don't have cached uploader info
 	if channelName == "" {
-		channelName = strings.TrimSpace(videoInfo.UploaderID)
+		videoInfo, err := downloader.GetVideoInfo(video.URL)
+		if err != nil {
+			log.Printf("Failed to resolve channel metadata for video %s: %v", video.Title, err)
+			return err
+		}
+
+		channelName = strings.TrimSpace(videoInfo.Uploader)
+		if channelName == "" {
+			channelName = strings.TrimSpace(videoInfo.UploaderID)
+		}
+		publishTime = videoInfo.PublishTime
+
+		// Cache uploader info in memory for later persistence
+		video.Uploader = strings.TrimSpace(videoInfo.Uploader)
+		video.UploaderID = strings.TrimSpace(videoInfo.UploaderID)
 	}
+
 	if channelName == "" {
 		log.Printf("Failed to determine channel name for video %s", video.Title)
 		return fmt.Errorf("could not determine channel name for video %s", video.Title)
@@ -475,6 +500,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	log.Printf("Attempting download for video: %s", video.Title)
 
+	precheckedVideoID := extractYouTubeVideoID(video.URL)
 	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
 	if err != nil {
 		log.Printf("Failed to download video %s: %v", video.Title, err)
@@ -510,9 +536,16 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	// Mark as downloaded
-	if err := storage.MarkVideoAsDownloaded(video.ID, downloadedVideoID, downloadedTitle); err != nil {
+	if err := storage.MarkVideoAsDownloaded(video.ID, downloadedVideoID, downloadedTitle, publishTime); err != nil {
 		log.Printf("Failed to mark video %s as downloaded: %v", video.Title, err)
 		return err
+	}
+
+	// Cache uploader info so we don't need to re-query yt-dlp on next run
+	if video.Uploader != "" || video.UploaderID != "" {
+		if err := storage.UpdateVideoUploaderInfo(video.ID, video.Uploader, video.UploaderID); err != nil {
+			log.Printf("Failed to cache uploader info for video %s: %v", video.Title, err)
+		}
 	}
 
 	log.Printf("Finished video %s (downloaded)", video.Title)

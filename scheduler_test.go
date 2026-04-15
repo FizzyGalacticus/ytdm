@@ -95,3 +95,49 @@ func TestBuildChannelSinceTime(t *testing.T) {
 		}
 	})
 }
+
+func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
+	now := time.Date(2026, 3, 23, 12, 0, 0, 0, time.UTC)
+	cutoff := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC) // Recent cutoff
+	retention := 7
+
+	since := buildChannelSinceTime(now, retention, cutoff)
+
+	// The video published on 2026-03-19 is before cutoff (Mar 20), so should NOT be eligible
+	publishBeforeCutoff := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
+	if !publishBeforeCutoff.Before(since) {
+		t.Fatalf("video published before cutoff should be before since threshold, got %v vs since %v", publishBeforeCutoff, since)
+	}
+
+	// A video published on 2026-03-20 is at cutoff, should be eligible (after since)
+	publishAtCutoff := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	if !publishAtCutoff.After(since) {
+		t.Fatalf("video published at cutoff should be eligible (after since), got %v vs since %v", publishAtCutoff, since)
+	}
+
+	// A video published within retention window but BEFORE cutoff should NOT be eligible
+	publishOldButInRetention := time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC) // Within 7 days but before cutoff
+	if !publishOldButInRetention.Before(since) {
+		t.Fatalf("expected old but in-retention video (before cutoff) to be ineligible, got %v vs since %v", publishOldButInRetention, since)
+	}
+}
+
+func TestStrictChannelRetentionWithoutCutoff(t *testing.T) {
+	now := time.Date(2026, 3, 23, 12, 0, 0, 0, time.UTC)
+	retention := 7
+
+	// No cutoff provided (zero time)
+	since := buildChannelSinceTime(now, retention, time.Time{})
+
+	// Video from 8 days ago should NOT be eligible (older than retention)
+	publishOld := now.AddDate(0, 0, -8)
+	if !publishOld.Before(since) {
+		t.Fatalf("video from 8 days ago should be ineligible with 7-day retention, got %v vs since %v", publishOld, since)
+	}
+
+	// Video from 2 days ago should be eligible
+	publishRecent := now.AddDate(0, 0, -2)
+	if !publishRecent.After(since) {
+		t.Fatalf("video from 2 days ago should be eligible with 7-day retention, got %v vs since %v", publishRecent, since)
+	}
+}
