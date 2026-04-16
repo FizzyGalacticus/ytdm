@@ -16,6 +16,7 @@ type DownloadedVideo struct {
 	ID             string    `json:"id"`
 	Title          string    `json:"title"`
 	DownloadDate   time.Time `json:"download_date"`
+	PublishDate    time.Time `json:"publish_date"`
 	DisablePruning bool      `json:"disable_pruning"`
 }
 
@@ -41,12 +42,15 @@ type Video struct {
 	ID               string            `json:"id"`
 	URL              string            `json:"url"`
 	Title            string            `json:"title"`
+	AddedDate        time.Time         `json:"added_date"`
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
 	DisablePruning   bool              `json:"disable_pruning"`
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
+	Uploader         string            `json:"uploader,omitempty"`   // Cached uploader/channel name to avoid re-querying API
+	UploaderID       string            `json:"uploader_id,omitempty"` // Cached uploader ID to avoid re-querying API
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
@@ -207,7 +211,7 @@ func (s *Storage) UpdateChannelID(oldID, newID string) error {
 
 // MarkVideoAsDownloaded adds a video ID to the appropriate download list with current timestamp
 // Can be used for both channel videos (channelID is a channel ID) or individual videos (channelID is a video ID)
-func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string) error {
+func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string, publishDate time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -224,6 +228,7 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string) e
 				ID:           videoID,
 				Title:        videoTitle,
 				DownloadDate: time.Now(),
+				PublishDate:  publishDate,
 			})
 			return s.save()
 		}
@@ -242,6 +247,7 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string) e
 				ID:           videoID,
 				Title:        videoTitle,
 				DownloadDate: time.Now(),
+				PublishDate:  publishDate,
 			})
 			return s.save()
 		}
@@ -453,6 +459,10 @@ func (s *Storage) AddVideo(video Video) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if video.AddedDate.IsZero() {
+		video.AddedDate = time.Now().UTC()
+	}
+
 	s.data.Videos = append(s.data.Videos, video)
 	return s.save()
 }
@@ -499,6 +509,22 @@ func (s *Storage) UpdateVideo(id string, retentionDays int, disablePruning bool,
 			s.data.Videos[i].VideoQuality = videoQuality
 			s.data.Videos[i].VideoFormat = videoFormat
 			s.data.Videos[i].DownloadShorts = downloadShorts
+			return s.save()
+		}
+	}
+
+	return nil
+}
+
+// UpdateVideoUploaderInfo caches uploader metadata for a video to avoid re-querying yt-dlp
+func (s *Storage) UpdateVideoUploaderInfo(id, uploader, uploaderID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Videos {
+		if s.data.Videos[i].ID == id {
+			s.data.Videos[i].Uploader = strings.TrimSpace(uploader)
+			s.data.Videos[i].UploaderID = strings.TrimSpace(uploaderID)
 			return s.save()
 		}
 	}

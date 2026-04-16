@@ -98,7 +98,13 @@ Each channel can override the global retention with its own retention period and
 - **Keep indefinitely (disable pruning)**: Skip automatic pruning for this channel/video entry
 - **Cutoff Date**: Only download videos published on or after this date
 
-Channel monitoring only downloads videos that are newer than `now - retention_days` (using channel retention, or global retention when channel retention is unset).
+Channel monitoring downloads videos only when both conditions are true:
+
+- `publish_date >= cutoff_date` (when cutoff is set)
+- `publish_date >= now - retention_days` (using channel retention, or global retention when channel retention is unset)
+
+Single-entry requested videos are always attempted when present in the list (publish date is not used as a download gate for single entries).
+Pruning is based on download age (`now - retention_days`), with per-entry No Prune still respected.
 
 ## Cookie Support
 
@@ -226,6 +232,7 @@ docker build -t ytdm:latest --no-cache .
     "retention_days": 90
   }
   ```
+  - `added_date` is set automatically when omitted.
 - `DELETE /api/videos/{id}` - Remove a video
 
 ### Configuration

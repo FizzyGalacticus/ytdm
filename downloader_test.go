@@ -1116,7 +1116,7 @@ func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	if err := downloader.CleanOldVideosForChannel(channelName, "channel-1", 7, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-1", 7, time.Time{}, storage); err != nil {
 		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
 	}
 
@@ -1170,7 +1170,7 @@ func TestCleanOldVideosForChannelRespectsDownloadedVideoDisablePruning(t *testin
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	if err := downloader.CleanOldVideosForChannel(channelName, "channel-keep", 7, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-keep", 7, time.Time{}, storage); err != nil {
 		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
 	}
 
@@ -1231,8 +1231,12 @@ func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 		t.Fatalf("AddVideo() error = %v", err)
 	}
 
-	if err := downloader.CleanOldVideosForVideo("Tracked video entry", "video-entry-1", 7, storage); err != nil {
+	removed, err := downloader.CleanOldVideosForVideo("Tracked video entry", "video-entry-1", 7, storage)
+	if err != nil {
 		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
+	}
+	if !removed {
+		t.Fatalf("expected entry removal signal when old tracked file is pruned")
 	}
 
 	if _, err := os.Stat(trackedOld); !os.IsNotExist(err) {
@@ -1334,5 +1338,202 @@ func TestRemoveVideoResourcesRemovesTrackedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(untracked); err != nil {
 		t.Fatalf("expected untracked file to remain, stat err = %v", err)
+	}
+}
+
+func TestChannelCutoffBasedPruning(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	channelName := "Channel with Cutoff"
+	channelDir := filepath.Join(tmpDir, sanitizeFilename(channelName))
+	if err := os.MkdirAll(channelDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	now := time.Now()
+	cutoffDate := now.AddDate(0, 0, -5) // Cutoff 5 days ago
+
+	// File downloaded 2 days ago
+	recentFile := filepath.Join(channelDir, "recent-vid001.mp4")
+	if err := os.WriteFile(recentFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	recentDownloadDate := now.AddDate(0, 0, -2)
+	if err := os.Chtimes(recentFile, recentDownloadDate, recentDownloadDate); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	// File downloaded 10 days ago (old by retention) with publish date older than cutoff
+	oldFile := filepath.Join(channelDir, "old-vid002.mp4")
+	if err := os.WriteFile(oldFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	oldDownloadDate := now.AddDate(0, 0, -10)
+	oldPublishDate := now.AddDate(0, 0, -7) // Published 7 days ago (before cutoff)
+	if err := os.Chtimes(oldFile, oldDownloadDate, oldDownloadDate); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	// File published 6 days ago (before cutoff) but downloaded recently – should be pruned
+	cutoffViolationFile := filepath.Join(channelDir, "cutoff-vid003.mp4")
+	if err := os.WriteFile(cutoffViolationFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cutoffPublishDate := now.AddDate(0, 0, -6) // Published 6 days ago
+	recentDownloadDate2 := now.AddDate(0, 0, -1) // Downloaded 1 day ago
+	if err := os.Chtimes(cutoffViolationFile, recentDownloadDate2, recentDownloadDate2); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	if err := storage.AddChannel(Channel{
+		ID:   "channel-cutoff",
+		Name: channelName,
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "vid001", Title: "Recent", DownloadDate: recentDownloadDate, PublishDate: now},
+			{ID: "vid002", Title: "Old", DownloadDate: oldDownloadDate, PublishDate: oldPublishDate},
+			{ID: "vid003", Title: "Cutoff Violation", DownloadDate: recentDownloadDate2, PublishDate: cutoffPublishDate},
+		},
+	}); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	// Run cleanup with 7-day retention and cutoff 5 days ago
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-cutoff", 7, cutoffDate, storage); err != nil {
+		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
+	}
+
+	// Recent file should remain (recent download and publish after cutoff)
+	if _, err := os.Stat(recentFile); err != nil {
+		t.Fatalf("expected recent file to remain, stat err = %v", err)
+	}
+
+	// Old file should be pruned (10 days old download, retention is 7 days)
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Fatalf("expected old file (10 days old download) to be removed by retention, stat err = %v", err)
+	}
+
+	// Cutoff violation file should be removed (publish date is before cutoff)
+	if _, err := os.Stat(cutoffViolationFile); !os.IsNotExist(err) {
+		t.Fatalf("expected cutoff violation file (published before cutoff) to be removed, stat err = %v", err)
+	}
+}
+
+func TestSingleEntryPruningReturnsRemovalSignal(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	videoDir := filepath.Join(tmpDir, "Video Creator")
+	if err := os.MkdirAll(videoDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Create tracked old file
+	oldFile := filepath.Join(videoDir, "old-track-abc111.mp4")
+	if err := os.WriteFile(oldFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	now := time.Now()
+	oldTime := now.AddDate(0, 0, -10)
+	if err := os.Chtimes(oldFile, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	if err := storage.AddVideo(Video{
+		ID:    "single-video-1",
+		Title: "Video Creator",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "abc111", Title: "Old video", DownloadDate: oldTime},
+		},
+	}); err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
+
+	// Call cleanup with very low retention to trigger prune
+	removed, err := downloader.CleanOldVideosForVideo("Video Creator", "single-video-1", 3, storage)
+	if err != nil {
+		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
+	}
+
+	// Since all tracked files are old, removal signal should be true
+	if !removed {
+		t.Fatalf("expected removal signal=true when all tracked files are pruned")
+	}
+
+	// File should be deleted
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Fatalf("expected file to be removed, stat err = %v", err)
+	}
+}
+
+func TestSingleEntryNominalRetentionDoesNotRemove(t *testing.T) {
+	tmpDir := t.TempDir()
+	config := DefaultConfig()
+	config.DownloadDir = tmpDir
+	downloader := NewDownloader(config)
+
+	storagePath := filepath.Join(tmpDir, "storage.json")
+	storage, err := NewStorage(storagePath)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	videoDir := filepath.Join(tmpDir, "Creator")
+	if err := os.MkdirAll(videoDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	recentFile := filepath.Join(videoDir, "recent-xyz123.mp4")
+	if err := os.WriteFile(recentFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	now := time.Now()
+	recentTime := now.AddDate(0, 0, -2)
+	if err := os.Chtimes(recentFile, recentTime, recentTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	if err := storage.AddVideo(Video{
+		ID:    "single-video-2",
+		Title: "Creator",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "xyz123", Title: "Recent", DownloadDate: recentTime},
+		},
+	}); err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
+
+	// Call cleanup with 7-day retention – file is only 2 days old
+	removed, err := downloader.CleanOldVideosForVideo("Creator", "single-video-2", 7, storage)
+	if err != nil {
+		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
+	}
+
+	// No files pruned, so removal signal should be false
+	if removed {
+		t.Fatalf("expected removal signal=false when no files are pruned")
+	}
+
+	// File should remain
+	if _, err := os.Stat(recentFile); err != nil {
+		t.Fatalf("expected file to remain, stat err = %v", err)
 	}
 }

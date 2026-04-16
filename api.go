@@ -299,6 +299,10 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if video.AddedDate.IsZero() {
+		video.AddedDate = time.Now().UTC()
+	}
+
 	// Generate ID from URL if not provided
 	if video.ID == "" {
 		video.ID = extractIDFromURL(video.URL)

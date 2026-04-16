@@ -200,6 +200,7 @@ func TestConfigGetters(t *testing.T) {
 	if retentionDays != 7 {
 		t.Errorf("Expected retention days 7, got %d", retentionDays)
 	}
+
 }
 
 func TestConfigCookieSettings(t *testing.T) {
