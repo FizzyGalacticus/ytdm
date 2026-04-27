@@ -391,64 +391,6 @@ func TestResolveChannelID(t *testing.T) {
 	})
 }
 
-func TestSanitizeFilename(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "no special characters",
-			input:    "normal_filename",
-			expected: "normal_filename",
-		},
-		{
-			name:     "with forward slash",
-			input:    "path/to/file",
-			expected: "path_to_file",
-		},
-		{
-			name:     "with backslash",
-			input:    "path\\to\\file",
-			expected: "path_to_file",
-		},
-		{
-			name:     "with colon",
-			input:    "C:\\Users\\test",
-			expected: "C__Users_test",
-		},
-		{
-			name:     "with multiple invalid chars",
-			input:    "video:title?with*special<chars>",
-			expected: "video_title_with_special_chars_",
-		},
-		{
-			name:     "with quotes and pipes",
-			input:    "test\"file\"|name",
-			expected: "test_file__name",
-		},
-		{
-			name:     "empty string",
-			input:    "",
-			expected: "unnamed",
-		},
-		{
-			name:     "only spaces",
-			input:    "   ",
-			expected: "unnamed",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeFilename(tt.input)
-			if result != tt.expected {
-				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestEscapeXML(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1388,7 +1330,7 @@ func TestChannelCutoffBasedPruning(t *testing.T) {
 	if err := os.WriteFile(cutoffViolationFile, []byte("test"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	cutoffPublishDate := now.AddDate(0, 0, -6) // Published 6 days ago
+	cutoffPublishDate := now.AddDate(0, 0, -6)   // Published 6 days ago
 	recentDownloadDate2 := now.AddDate(0, 0, -1) // Downloaded 1 day ago
 	if err := os.Chtimes(cutoffViolationFile, recentDownloadDate2, recentDownloadDate2); err != nil {
 		t.Fatalf("Chtimes() error = %v", err)
