@@ -5,37 +5,27 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
-// sanitizeFilename normalizes a path component to a portable filename fragment.
+// nonAlphanumericRe matches any character that is not an ASCII letter or digit.
+var nonAlphanumericRe = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// sanitizeDirRe matches runs of characters not safe for a portable directory component.
+// Alphanumeric characters, underscores, and hyphens are preserved.
+var sanitizeDirRe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+
+// filenameDatePrefixRe matches a YYYY-MM-DD or YYYYMMDD date at the start of a filename stem.
+var filenameDatePrefixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}|\d{8})`)
+
+// sanitizeFilename normalizes a channel name to a portable directory component.
+// Runs of non-safe characters are replaced with a single underscore.
 func sanitizeFilename(name string) string {
-	return normalizePortableComponent(name)
-}
-
-func normalizePortableComponent(name string) string {
-	var b strings.Builder
-	prevUnderscore := false
-
-	for _, r := range name {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
-		if isAlphaNum || r == '_' || r == '-' {
-			b.WriteRune(r)
-			prevUnderscore = false
-			continue
-		}
-
-		if !prevUnderscore {
-			b.WriteByte('_')
-			prevUnderscore = true
-		}
-	}
-
-	result := strings.Trim(b.String(), "_.- ")
+	result := strings.Trim(sanitizeDirRe.ReplaceAllString(name, "_"), "_- ")
 	if result == "" {
 		return "unnamed"
 	}
-
 	return result
 }
 
@@ -54,9 +44,51 @@ func splitPortableFilename(name string) (stem, ext string) {
 	return strings.TrimSuffix(name, ext), ext
 }
 
-func normalizePortableFilename(name string) string {
+// normalizeVideoFilename rewrites a video filename to the canonical form:
+//
+//	YYYY-MM-DD <cleanTitle>-<videoID><ext>
+//
+// Non-alphanumeric characters are stripped from the title portion. Any
+// YYYYMMDD date prefix is normalized to YYYY-MM-DD. If videoID is empty,
+// no suffix is appended and the whole stem (after removing the date) is cleaned.
+func normalizeVideoFilename(name, videoID string) string {
 	stem, ext := splitPortableFilename(name)
-	return normalizePortableComponent(stem) + ext
+
+	dateStr := ""
+	rest := stem
+	if m := filenameDatePrefixRe.FindString(stem); m != "" {
+		if len(m) == 8 {
+			// YYYYMMDD → YYYY-MM-DD
+			dateStr = m[:4] + "-" + m[4:6] + "-" + m[6:]
+		} else {
+			dateStr = m
+		}
+		rest = strings.TrimLeft(strings.TrimPrefix(stem, m), " _-")
+	}
+
+	title := rest
+	if videoID != "" {
+		if strings.HasSuffix(title, "-"+videoID) {
+			title = title[:len(title)-len("-"+videoID)]
+		} else if idx := strings.LastIndex(title, videoID); idx >= 0 && idx+len(videoID) == len(title) {
+			title = strings.TrimRight(title[:idx], " _-")
+		}
+	}
+
+	cleanTitle := nonAlphanumericRe.ReplaceAllString(title, "")
+
+	var b strings.Builder
+	if dateStr != "" {
+		b.WriteString(dateStr)
+		b.WriteByte(' ')
+	}
+	b.WriteString(cleanTitle)
+	if videoID != "" {
+		b.WriteByte('-')
+		b.WriteString(videoID)
+	}
+	b.WriteString(ext)
+	return b.String()
 }
 
 func (d *Downloader) normalizeDownloadedFilenames(channelDir, videoID string) error {
@@ -83,7 +115,7 @@ func (d *Downloader) normalizeDownloadedFilenames(channelDir, videoID string) er
 			continue
 		}
 
-		newName := normalizePortableFilename(oldName)
+		newName := normalizeVideoFilename(oldName, videoID)
 		if newName == oldName {
 			continue
 		}

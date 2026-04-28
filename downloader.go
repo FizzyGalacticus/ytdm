@@ -239,12 +239,12 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 			continue
 		}
 
-		// Parse upload date
+		// Parse upload date in UTC for consistent retention comparisons.
 		if info.UploadDate != "" {
-			t, err := time.Parse("20060102", info.UploadDate)
+			t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
 			if err == nil {
 				info.PublishTime = t
-				// Only include videos published after 'since' time
+				// Only include videos published after 'since' time.
 				if t.After(since) {
 					videos = append(videos, info)
 				}
@@ -309,11 +309,12 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 		}
 
 		// Only include videos published after 'since' time
-		if entry.Published.After(since) {
+		publishedUTC := NormalizeToUTC(entry.Published)
+		if publishedUTC.After(since) {
 			videos = append(videos, VideoInfo{
 				ID:          videoID,
 				Title:       entry.Title,
-				PublishTime: entry.Published,
+				PublishTime: publishedUTC,
 			})
 		}
 	}
@@ -379,9 +380,9 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 		return nil, fmt.Errorf("failed to parse video info: %v", err)
 	}
 
-	// Parse upload date
+	// Parse upload date in UTC for consistent retention comparisons.
 	if info.UploadDate != "" {
-		t, err := time.Parse("20060102", info.UploadDate)
+		t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
 		if err == nil {
 			info.PublishTime = t
 		}

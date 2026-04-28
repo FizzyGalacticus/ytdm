@@ -127,4 +127,47 @@ func TestShouldPruneByChannelCutoff(t *testing.T) {
 			t.Fatal("expected no prune when publish date is after cutoff")
 		}
 	})
+
+	t.Run("timezone normalized comparison", func(t *testing.T) {
+		locPlus2 := time.FixedZone("UTC+2", 2*60*60)
+		publishUTC := time.Date(2026, 4, 19, 22, 30, 0, 0, time.UTC)
+		publishPlus2 := publishUTC.In(locPlus2)
+		cutoffPlus2 := cutoff.In(locPlus2)
+
+		if !ShouldPruneByChannelCutoff(publishPlus2, cutoffPlus2) {
+			t.Fatal("expected prune decision to be consistent across timezones")
+		}
+	})
+}
+
+func TestParseYouTubeUploadDateUTC(t *testing.T) {
+	got, err := ParseYouTubeUploadDateUTC("20260427")
+	if err != nil {
+		t.Fatalf("ParseYouTubeUploadDateUTC() error = %v", err)
+	}
+
+	expected := time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(expected) {
+		t.Fatalf("expected %v, got %v", expected, got)
+	}
+	if got.Location() != time.UTC {
+		t.Fatalf("expected UTC location, got %v", got.Location())
+	}
+}
+
+func TestRetentionBoundaryOneDayAtSixPM(t *testing.T) {
+	retentionDays := 1
+	publishTime := time.Date(2026, 4, 1, 17, 59, 0, 0, time.UTC)
+
+	nowBeforeRemoval := time.Date(2026, 4, 2, 17, 58, 59, 0, time.UTC)
+	sinceBefore := BuildChannelSinceTime(nowBeforeRemoval, retentionDays, time.Time{})
+	if !publishTime.After(sinceBefore) {
+		t.Fatalf("expected publish time %v to still be eligible before retention boundary, since=%v", publishTime, sinceBefore)
+	}
+
+	nowAtOrAfterRemoval := time.Date(2026, 4, 2, 18, 0, 0, 0, time.UTC)
+	sinceAfter := BuildChannelSinceTime(nowAtOrAfterRemoval, retentionDays, time.Time{})
+	if !publishTime.Before(sinceAfter) {
+		t.Fatalf("expected publish time %v to be ineligible on/after retention boundary, since=%v", publishTime, sinceAfter)
+	}
 }

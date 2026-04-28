@@ -54,19 +54,19 @@ func TestSplitPortableFilename(t *testing.T) {
 	}
 }
 
-func TestNormalizePortableFilename(t *testing.T) {
+func TestNormalizeVideoFilenameNoID(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected string
 	}{
-		{name: "video filename", input: "2026-04-27 My Vidéo! #1-abc123.mp4", expected: "2026-04-27_My_Vid_o_1-abc123.mp4"},
-		{name: "info json filename", input: "2026-04-27 My Vidéo! #1-abc123.info.json", expected: "2026-04-27_My_Vid_o_1-abc123.info.json"},
+		{name: "video filename", input: "2026-04-27 My Vidéo! #1-abc123.mp4", expected: "2026-04-27 MyVido1abc123.mp4"},
+		{name: "info json filename", input: "2026-04-27 My Vidéo! #1-abc123.info.json", expected: "2026-04-27 MyVido1abc123.info.json"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizePortableFilename(tt.input)
+			got := normalizeVideoFilename(tt.input, "")
 			if got != tt.expected {
 				t.Fatalf("normalizePortableFilename(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
@@ -96,8 +96,8 @@ func TestNormalizeDownloadedFilenames(t *testing.T) {
 		t.Fatalf("normalizeDownloadedFilenames() error = %v", err)
 	}
 
-	mediaNew := "2026-04-27_My_Vid_o_1-" + videoID + ".mp4"
-	infoNew := "2026-04-27_My_Vid_o_1-" + videoID + ".info.json"
+	mediaNew := "2026-04-27 MyVido1-" + videoID + ".mp4"
+	infoNew := "2026-04-27 MyVido1-" + videoID + ".info.json"
 
 	if _, err := os.Stat(filepath.Join(tmpDir, mediaOld)); !os.IsNotExist(err) {
 		t.Fatalf("expected old media filename to be renamed, stat err = %v", err)

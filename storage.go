@@ -46,13 +46,13 @@ type Video struct {
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
 	DisablePruning   bool              `json:"disable_pruning"`
-	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
-	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
-	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
-	Uploader         string            `json:"uploader,omitempty"`   // Cached uploader/channel name to avoid re-querying API
+	VideoQuality     string            `json:"video_quality"`         // Video quality preference (e.g., "best", "720", "480", "360")
+	VideoFormat      string            `json:"video_format"`          // Video format preference (e.g., "mp4", "webm", "mkv")
+	DownloadShorts   bool              `json:"download_shorts"`       // Whether to download short-format videos
+	Uploader         string            `json:"uploader,omitempty"`    // Cached uploader/channel name to avoid re-querying API
 	UploaderID       string            `json:"uploader_id,omitempty"` // Cached uploader ID to avoid re-querying API
-	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
-	LastError        string            `json:"last_error,omitempty"` // Most recent error message
+	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`     // Track which videos have been downloaded with dates
+	LastError        string            `json:"last_error,omitempty"`  // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
 }
 
@@ -227,8 +227,8 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string, p
 			s.data.Channels[i].DownloadedVideos = append(s.data.Channels[i].DownloadedVideos, DownloadedVideo{
 				ID:           videoID,
 				Title:        videoTitle,
-				DownloadDate: time.Now(),
-				PublishDate:  publishDate,
+				DownloadDate: time.Now().UTC(),
+				PublishDate:  NormalizeToUTC(publishDate),
 			})
 			return s.save()
 		}
@@ -246,8 +246,8 @@ func (s *Storage) MarkVideoAsDownloaded(channelID, videoID, videoTitle string, p
 			s.data.Videos[i].DownloadedVideos = append(s.data.Videos[i].DownloadedVideos, DownloadedVideo{
 				ID:           videoID,
 				Title:        videoTitle,
-				DownloadDate: time.Now(),
-				PublishDate:  publishDate,
+				DownloadDate: time.Now().UTC(),
+				PublishDate:  NormalizeToUTC(publishDate),
 			})
 			return s.save()
 		}
