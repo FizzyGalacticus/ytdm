@@ -178,7 +178,7 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 				return
 			}
 
-			retentionDays := effectiveRetentionDays(ch.RetentionDays, defaultRetention)
+			retentionDays := EffectiveRetentionDays(ch.RetentionDays, defaultRetention)
 			if retentionDays <= 0 {
 				return
 			}
@@ -210,7 +210,7 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 				return
 			}
 
-			retentionDays := effectiveRetentionDays(video.RetentionDays, defaultRetention)
+			retentionDays := EffectiveRetentionDays(video.RetentionDays, defaultRetention)
 			if retentionDays <= 0 {
 				return
 			}
@@ -239,7 +239,7 @@ waitForCleanup:
 
 // processChannel checks a channel for new videos and downloads them
 func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader) (err error) {
-	effectiveRetention := effectiveRetentionDays(channel.RetentionDays, getDefaultRetentionDays(downloader))
+	effectiveRetention := EffectiveRetentionDays(channel.RetentionDays, getDefaultRetentionDays(downloader))
 	log.Printf("Processing channel: %s (retention: %d days)", channel.Name, effectiveRetention)
 
 	downloadCount := 0
@@ -273,7 +273,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	// Channel download eligibility requires both:
 	// 1) publish date after cutoff date
 	// 2) publish date within now-retention window
-	since := buildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
+	since := BuildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
 
 	// Always try fast index (RSS) first, then fall back to yt-dlp
 	var videos []VideoInfo
@@ -339,36 +339,6 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	}
 
 	return nil
-}
-
-func effectiveRetentionDays(itemRetention, defaultRetention int) int {
-	if itemRetention > 0 {
-		return itemRetention
-	}
-	return defaultRetention
-}
-
-func buildChannelSinceTime(now time.Time, retentionDays int, cutoffDate time.Time) time.Time {
-	var since time.Time
-
-	if retentionDays > 0 {
-		retentionThreshold := retentionCutoff(startOfDayUTC(now), retentionDays)
-		since = retentionThreshold.Add(-time.Second)
-	}
-
-	if !cutoffDate.IsZero() {
-		cutoffSince := startOfDayUTC(cutoffDate).Add(-time.Second)
-		if since.IsZero() || cutoffSince.After(since) {
-			since = cutoffSince
-		}
-	}
-
-	return since
-}
-
-func startOfDayUTC(t time.Time) time.Time {
-	year, month, day := t.UTC().Date()
-	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 func normalizeChannelVideoURL(videoIDOrURL string) string {

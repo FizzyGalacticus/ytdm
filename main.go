@@ -62,6 +62,19 @@ func main() {
 		}
 	}
 
+	startupPrune := RunStartupChannelPruneScan(config, storage)
+	if startupPrune.VideosPruned > 0 || startupPrune.FilesRemoved > 0 || startupPrune.FilesMoved > 0 {
+		log.Printf("Startup prune scan complete: removed %d tracked video(s), %d file(s), moved %d no-prune file(s)", startupPrune.VideosPruned, startupPrune.FilesRemoved, startupPrune.FilesMoved)
+	} else {
+		log.Println("Startup prune scan complete: no stale tracked channel files found")
+	}
+	if len(startupPrune.Warnings) > 0 {
+		log.Printf("Startup prune scan had %d warning(s)", len(startupPrune.Warnings))
+		for _, warning := range startupPrune.Warnings {
+			log.Printf("  - %s", warning)
+		}
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

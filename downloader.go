@@ -239,12 +239,12 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 			continue
 		}
 
-		// Parse upload date
+		// Parse upload date in UTC for consistent retention comparisons.
 		if info.UploadDate != "" {
-			t, err := time.Parse("20060102", info.UploadDate)
+			t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
 			if err == nil {
 				info.PublishTime = t
-				// Only include videos published after 'since' time
+				// Only include videos published after 'since' time.
 				if t.After(since) {
 					videos = append(videos, info)
 				}
@@ -309,11 +309,12 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 		}
 
 		// Only include videos published after 'since' time
-		if entry.Published.After(since) {
+		publishedUTC := NormalizeToUTC(entry.Published)
+		if publishedUTC.After(since) {
 			videos = append(videos, VideoInfo{
 				ID:          videoID,
 				Title:       entry.Title,
-				PublishTime: entry.Published,
+				PublishTime: publishedUTC,
 			})
 		}
 	}
@@ -379,9 +380,9 @@ func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 		return nil, fmt.Errorf("failed to parse video info: %v", err)
 	}
 
-	// Parse upload date
+	// Parse upload date in UTC for consistent retention comparisons.
 	if info.UploadDate != "" {
-		t, err := time.Parse("20060102", info.UploadDate)
+		t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
 		if err == nil {
 			info.PublishTime = t
 		}
@@ -571,6 +572,16 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 
 	log.Printf("Successfully downloaded video: %s", videoURL)
 	result.Downloaded = true
+
+	normalizeID := result.VideoID
+	if normalizeID == "" {
+		normalizeID = videoID
+	}
+	if normalizeID != "" {
+		if err := d.normalizeDownloadedFilenames(channelDir, normalizeID); err != nil {
+			log.Printf("Warning: failed to normalize downloaded filenames for %s: %v", normalizeID, err)
+		}
+	}
 
 	if result.VideoID != "" {
 		if metadata, metaErr := d.loadMetadataFromInfoJSON(channelDir, result.VideoID); metaErr != nil {
@@ -988,7 +999,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		return nil // Channel directory doesn't exist yet
 	}
 
-	cutoffTime := retentionCutoff(time.Now(), retentionDays)
+	cutoffTime := RetentionCutoff(time.Now(), retentionDays)
 
 	// Get list of downloaded videos to check against
 	channels := storage.GetChannels()
@@ -1028,7 +1039,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 
 		shouldPruneByRetention := !trackedVideo.DownloadDate.IsZero() && trackedVideo.DownloadDate.Before(cutoffTime)
-		shouldPruneByCutoff := shouldPruneByChannelCutoff(trackedVideo.PublishDate, cutoffDate)
+		shouldPruneByCutoff := ShouldPruneByChannelCutoff(trackedVideo.PublishDate, cutoffDate)
 
 		if shouldPruneByRetention || shouldPruneByCutoff {
 			if err := os.Remove(path); err != nil {
@@ -1066,7 +1077,7 @@ func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionD
 		return false, nil
 	}
 
-	cutoffTime := retentionCutoff(time.Now(), retentionDays)
+	cutoffTime := RetentionCutoff(time.Now(), retentionDays)
 
 	// Get the video entry to check its downloaded videos
 	videos := storage.GetVideos()
@@ -1134,14 +1145,6 @@ func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionD
 	}
 
 	return entryShouldBeRemoved, nil
-}
-
-func shouldPruneByChannelCutoff(publishDate, cutoffDate time.Time) bool {
-	if cutoffDate.IsZero() || publishDate.IsZero() {
-		return false
-	}
-
-	return publishDate.Before(startOfDayUTC(cutoffDate))
 }
 
 func findTrackedVideo(baseName string, videos []DownloadedVideo) (DownloadedVideo, bool) {
@@ -1241,33 +1244,6 @@ func (d *Downloader) RemoveVideoResources(video Video) error {
 	})
 
 	return firstErr
-}
-
-// sanitizeFilename removes or replaces characters that are invalid in filenames
-// Handles characters that are problematic on Windows, Linux, macOS, and network filesystems
-func sanitizeFilename(name string) string {
-	// Replace invalid characters with underscores
-	invalid := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|", "\x00"}
-	result := name
-	for _, char := range invalid {
-		result = strings.ReplaceAll(result, char, "_")
-	}
-
-	// Remove control characters (ASCII 0-31 and 127)
-	for i := 0; i < 32; i++ {
-		result = strings.ReplaceAll(result, string(rune(i)), "")
-	}
-	result = strings.ReplaceAll(result, string(rune(127)), "")
-
-	// Trim leading/trailing whitespace and dots (problematic on Windows)
-	result = strings.Trim(result, " .")
-
-	// Ensure we don't end up with an empty string
-	if result == "" {
-		result = "unnamed"
-	}
-
-	return result
 }
 
 // VideoMetadata holds metadata about a video for NFO generation
