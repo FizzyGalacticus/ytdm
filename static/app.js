@@ -184,10 +184,10 @@ async function loadChannels() {
                                     ${errorSection}
                                 </div>
                                 <div class="ms-3">
-                                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${escapeHtml(ch.name)}')">
+                                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${ch.name.replace(/'/g, "\\'")}')">
                                         <i class="bi bi-journal-text"></i> Logs
                                     </button>
-                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
+                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
                                         <i class="bi bi-pencil"></i> Edit
                                     </button>
                                     <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
