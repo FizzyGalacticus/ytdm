@@ -62,11 +62,3 @@ func BuildChannelSinceTime(now time.Time, retentionDays int, cutoffDate time.Tim
 
 	return since
 }
-
-func ShouldPruneByChannelCutoff(publishDate, cutoffDate time.Time) bool {
-	if cutoffDate.IsZero() || publishDate.IsZero() {
-		return false
-	}
-
-	return NormalizeToUTC(publishDate).Before(NormalizeToUTC(cutoffDate))
-}

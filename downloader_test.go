@@ -1283,7 +1283,7 @@ func TestRemoveVideoResourcesRemovesTrackedFiles(t *testing.T) {
 	}
 }
 
-func TestChannelCutoffBasedPruning(t *testing.T) {
+func TestChannelPruningUsesDownloadAgeOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	config := DefaultConfig()
 	config.DownloadDir = tmpDir
@@ -1325,7 +1325,7 @@ func TestChannelCutoffBasedPruning(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	// File published 6 days ago (before cutoff) but downloaded recently – should be pruned
+	// File published before cutoff but downloaded recently - should remain.
 	cutoffViolationFile := filepath.Join(channelDir, "cutoff-vid003.mp4")
 	if err := os.WriteFile(cutoffViolationFile, []byte("test"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -1363,9 +1363,9 @@ func TestChannelCutoffBasedPruning(t *testing.T) {
 		t.Fatalf("expected old file (10 days old download) to be removed by retention, stat err = %v", err)
 	}
 
-	// Cutoff violation file should be removed (publish date is before cutoff)
-	if _, err := os.Stat(cutoffViolationFile); !os.IsNotExist(err) {
-		t.Fatalf("expected cutoff violation file (published before cutoff) to be removed, stat err = %v", err)
+	// Cutoff does not drive pruning; recent downloads are retained.
+	if _, err := os.Stat(cutoffViolationFile); err != nil {
+		t.Fatalf("expected recently-downloaded cutoff-violating file to remain, stat err = %v", err)
 	}
 }
 

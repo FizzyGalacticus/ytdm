@@ -105,6 +105,7 @@ Channel monitoring downloads videos only when both conditions are true:
 
 Single-entry requested videos are always attempted when present in the list (publish date is not used as a download gate for single entries).
 Pruning is based on download age (`now - retention_days`), with per-entry No Prune still respected.
+Channel cutoff date is used for channel discovery eligibility and does not trigger pruning by publish date.
 
 ## Cookie Support
 

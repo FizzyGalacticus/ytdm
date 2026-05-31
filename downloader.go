@@ -987,12 +987,14 @@ func extractSkipReason(output string) string {
 	return "filtered out or unavailable"
 }
 
-// CleanOldVideosForChannel removes channel videos that are before cutoff date or
-// whose download age exceeds retention days.
+// CleanOldVideosForChannel removes channel videos whose download age exceeds
+// retention days.
 func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, cutoffDate time.Time, storage *Storage) error {
 	if retentionDays <= 0 {
 		return nil
 	}
+
+	_ = cutoffDate // Channel cutoff affects download eligibility, not pruning.
 
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
 	if _, err := os.Stat(channelDir); os.IsNotExist(err) {
@@ -1039,17 +1041,12 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 
 		shouldPruneByRetention := !trackedVideo.DownloadDate.IsZero() && trackedVideo.DownloadDate.Before(cutoffTime)
-		shouldPruneByCutoff := ShouldPruneByChannelCutoff(trackedVideo.PublishDate, cutoffDate)
 
-		if shouldPruneByRetention || shouldPruneByCutoff {
+		if shouldPruneByRetention {
 			if err := os.Remove(path); err != nil {
 				log.Printf("Failed to remove %s: %v", path, err)
 			} else {
-				reason := "retention"
-				if shouldPruneByCutoff {
-					reason = "cutoff"
-				}
-				log.Printf("Pruned video file: %s (reason: %s, download_date: %s, publish_date: %s)", path, reason, trackedVideo.DownloadDate, trackedVideo.PublishDate)
+				log.Printf("Pruned video file: %s (reason: retention, download_date: %s)", path, trackedVideo.DownloadDate)
 			}
 		}
 

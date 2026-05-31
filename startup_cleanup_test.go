@@ -7,51 +7,7 @@ import (
 	"time"
 )
 
-func TestParseDateFromFilename(t *testing.T) {
-	tests := []struct {
-		name     string
-		fileName string
-		ok       bool
-		expected time.Time
-	}{
-		{
-			name:     "YYYY-MM-DD leading date",
-			fileName: "2025-01-10 sample-video-abc123.mp4",
-			ok:       true,
-			expected: time.Date(2025, 1, 10, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:     "legacy YYYYMMDD leading date",
-			fileName: "20250110_sample-video-abc123.mp4",
-			ok:       true,
-			expected: time.Date(2025, 1, 10, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:     "embedded date (not at start)",
-			fileName: "sample-2024-12-31-video-abc123.info.json",
-			ok:       false,
-		},
-		{
-			name:     "no date",
-			fileName: "sample-video-abc123.mp4",
-			ok:       false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := parseDateFromFilename(tt.fileName)
-			if ok != tt.ok {
-				t.Fatalf("parseDateFromFilename(%q) ok = %v, want %v", tt.fileName, ok, tt.ok)
-			}
-			if tt.ok && !got.Equal(tt.expected) {
-				t.Fatalf("parseDateFromFilename(%q) date = %v, want %v", tt.fileName, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromFilenameDate(t *testing.T) {
+func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromDownloadDate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	config := DefaultConfig()
@@ -90,6 +46,13 @@ func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromFilenameDate(t *testi
 		}
 	}
 
+	oldDownloadDate := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, p := range []string{oldMedia, oldInfo} {
+		if err := os.Chtimes(p, oldDownloadDate, oldDownloadDate); err != nil {
+			t.Fatalf("Chtimes(%s) error = %v", p, err)
+		}
+	}
+
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
 	result := runStartupChannelPruneScanAt(now, config, storage)
 
@@ -116,7 +79,7 @@ func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromFilenameDate(t *testi
 	}
 }
 
-func TestRunStartupChannelPruneScanAt_PrunesByCutoffDate(t *testing.T) {
+func TestRunStartupChannelPruneScanAt_DoesNotPruneByCutoffDate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	config := DefaultConfig()
@@ -150,14 +113,18 @@ func TestRunStartupChannelPruneScanAt_PrunesByCutoffDate(t *testing.T) {
 	if err := os.WriteFile(oldFile, []byte("x"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-
-	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
-	if result.VideosPruned != 1 {
-		t.Fatalf("expected one pruned video by cutoff, got %d", result.VideosPruned)
+	recentDownloadDate := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldFile, recentDownloadDate, recentDownloadDate); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
-		t.Fatalf("expected cutoff-violating file removed, stat err = %v", err)
+	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
+	if result.VideosPruned != 0 {
+		t.Fatalf("expected no prune by cutoff date, got %d", result.VideosPruned)
+	}
+
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("expected cutoff-violating file to remain when download date is recent, stat err = %v", err)
 	}
 }
 
@@ -193,6 +160,10 @@ func TestRunStartupChannelPruneScanAt_KeepsRecentFiles(t *testing.T) {
 	recentFile := filepath.Join(channelDir, "2026-04-25 recent-new123.mp4")
 	if err := os.WriteFile(recentFile, []byte("x"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
+	}
+	recentDownloadDate := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(recentFile, recentDownloadDate, recentDownloadDate); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
 	}
 
 	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
@@ -244,6 +215,10 @@ func TestRunStartupChannelPruneScanAt_PrunesFromLegacyChannelPath(t *testing.T) 
 	oldLegacyFile := filepath.Join(legacyDir, "2024-01-01 legacy-video-legacy123.mp4")
 	if err := os.WriteFile(oldLegacyFile, []byte("x"), 0644); err != nil {
 		t.Fatalf("WriteFile(legacy file) error = %v", err)
+	}
+	oldDownloadDate := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldLegacyFile, oldDownloadDate, oldDownloadDate); err != nil {
+		t.Fatalf("Chtimes(legacy file) error = %v", err)
 	}
 
 	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
