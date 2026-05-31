@@ -1,14 +1,30 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"sync"
 )
 
+var scopePattern = regexp.MustCompile(`\[scope:(channel|video):([^:\]]+):([^\]]*)\]\s*`)
+
+type LogEntry struct {
+	Line      string `json:"line"`
+	ScopeType string `json:"scope_type,omitempty"`
+	ScopeID   string `json:"scope_id,omitempty"`
+	ScopeName string `json:"scope_name,omitempty"`
+}
+
+type LogScope struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 // LogBuffer stores recent log lines in memory.
 type LogBuffer struct {
 	mu         sync.RWMutex
-	entries    []string
+	entries    []LogEntry
 	maxEntries int
 	partial    string
 }
@@ -19,7 +35,7 @@ func NewLogBuffer(maxEntries int) *LogBuffer {
 	}
 
 	return &LogBuffer{
-		entries:    make([]string, 0, maxEntries),
+		entries:    make([]LogEntry, 0, maxEntries),
 		maxEntries: maxEntries,
 	}
 }
@@ -45,7 +61,16 @@ func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 		if line == "" {
 			continue
 		}
-		lb.entries = append(lb.entries, line)
+
+		entry := LogEntry{Line: line}
+		if matches := scopePattern.FindStringSubmatch(line); len(matches) == 4 {
+			entry.ScopeType = strings.TrimSpace(matches[1])
+			entry.ScopeID = strings.TrimSpace(matches[2])
+			entry.ScopeName = strings.TrimSpace(matches[3])
+			entry.Line = strings.TrimSpace(scopePattern.ReplaceAllString(line, ""))
+		}
+
+		lb.entries = append(lb.entries, entry)
 	}
 
 	if len(lb.entries) > lb.maxEntries {
@@ -60,6 +85,55 @@ func (lb *LogBuffer) GetEntries() []string {
 	defer lb.mu.RUnlock()
 
 	entries := make([]string, len(lb.entries))
-	copy(entries, lb.entries)
+	for i, entry := range lb.entries {
+		entries[i] = entry.Line
+	}
 	return entries
+}
+
+func (lb *LogBuffer) GetStructuredEntries(scopeType, scopeID string) []LogEntry {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	normalizedType := strings.TrimSpace(strings.ToLower(scopeType))
+	normalizedID := strings.TrimSpace(scopeID)
+	filtered := make([]LogEntry, 0, len(lb.entries))
+
+	for _, entry := range lb.entries {
+		if normalizedType != "" && strings.ToLower(entry.ScopeType) != normalizedType {
+			continue
+		}
+		if normalizedID != "" && entry.ScopeID != normalizedID {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+
+	return filtered
+}
+
+func (lb *LogBuffer) GetScopes() []LogScope {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	seen := map[string]struct{}{}
+	scopes := make([]LogScope, 0)
+
+	for _, entry := range lb.entries {
+		if entry.ScopeType == "" || entry.ScopeID == "" {
+			continue
+		}
+		key := entry.ScopeType + ":" + entry.ScopeID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		scopes = append(scopes, LogScope{
+			Type: entry.ScopeType,
+			ID:   entry.ScopeID,
+			Name: entry.ScopeName,
+		})
+	}
+
+	return scopes
 }

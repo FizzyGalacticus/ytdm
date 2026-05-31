@@ -10,6 +10,9 @@ Automated YouTube video downloader with channel monitoring, retention management
 - Monitor YouTube channels and automatically download new videos
 - Per-channel and per-video retention policies with cutoff dates
 - Web UI for configuration and management
+- Channels list sorted alphabetically with expandable downloaded-video panels
+- Download status indicator for individually tracked videos
+- Color-coded scoped logs with channel/video filtering
 - REST API for programmatic control
 - Cookie support for bypassing rate limits
 - Automatic yt-dlp updates
@@ -147,6 +150,8 @@ Example format:
 
 ### Status
 - `GET /api/status` - Service status
+- `GET /api/logs` - Recent logs
+  - Optional query params: `scope_type=channel|video`, `scope_id=<id>`
 
 ## Directory Structure
 
@@ -250,6 +255,7 @@ docker build -t ytdm:latest --no-cache .
 ### Status
 
 - `GET /api/status` - Get service status
+- `GET /api/logs` - Get recent logs (supports `scope_type` and `scope_id` filters)
 
 ## Directory Structure
 
@@ -288,6 +294,13 @@ All operations are logged to stdout, including:
 - API requests
 - Configuration changes
 - Errors and warnings
+
+The web UI logs tab supports:
+- Color-coded channel/video scoped log lines
+- Structured filtering by channel or individual video entry
+- Jump-to-logs actions from the Channels and Videos views
+
+Metadata lookups prioritize non-yt-dlp sources first (for example, YouTube oEmbed) and only fall back to yt-dlp when required.
 
 ## Error Handling
 
