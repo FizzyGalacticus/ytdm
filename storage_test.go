@@ -333,6 +333,73 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	}
 }
 
+func TestStorageMigratePrunedVideoIDs(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	// Add channel with nil PrunedVideoIDs (simulates old schema data).
+	channel := Channel{
+		ID:             "migrate-channel",
+		Name:           "Migrate Channel",
+		URL:            "https://youtube.com/@migrate",
+		PrunedVideoIDs: nil, // explicitly nil = old data
+	}
+	storage.AddChannel(channel)
+
+	// Before migration: IsVideoDownloaded should return false.
+	if storage.IsVideoDownloaded(channel.ID, "old-vid-1") {
+		t.Error("expected false before migration")
+	}
+
+	// Run migration with some previously-seen video IDs.
+	if err := storage.MigratePrunedVideoIDs(channel.ID, []string{"old-vid-1", "old-vid-2", "old-vid-1"}); err != nil {
+		t.Fatalf("MigratePrunedVideoIDs() error = %v", err)
+	}
+
+	// After migration, those IDs should be considered downloaded.
+	if !storage.IsVideoDownloaded(channel.ID, "old-vid-1") {
+		t.Error("expected true after migration for old-vid-1")
+	}
+	if !storage.IsVideoDownloaded(channel.ID, "old-vid-2") {
+		t.Error("expected true after migration for old-vid-2")
+	}
+
+	// PrunedVideoIDs should be non-nil and deduplicated.
+	channels := storage.GetChannels()
+	var found *Channel
+	for i := range channels {
+		if channels[i].ID == channel.ID {
+			found = &channels[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("channel not found after migration")
+	}
+	if found.PrunedVideoIDs == nil {
+		t.Fatal("PrunedVideoIDs should be non-nil after migration")
+	}
+	if len(found.PrunedVideoIDs) != 2 {
+		t.Fatalf("expected 2 pruned IDs (deduplicated), got %d: %v", len(found.PrunedVideoIDs), found.PrunedVideoIDs)
+	}
+
+	// Running migration again should be a no-op (already initialized).
+	if err := storage.MigratePrunedVideoIDs(channel.ID, []string{"extra-vid"}); err != nil {
+		t.Fatalf("second MigratePrunedVideoIDs() error = %v", err)
+	}
+	channels = storage.GetChannels()
+	for i := range channels {
+		if channels[i].ID == channel.ID {
+			if len(channels[i].PrunedVideoIDs) != 2 {
+				t.Fatalf("expected migration to be no-op on second call, got %d IDs", len(channels[i].PrunedVideoIDs))
+			}
+		}
+	}
+}
+
 func TestStorageUpdateChannelDownloadedVideoPruning(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
 

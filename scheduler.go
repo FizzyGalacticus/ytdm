@@ -286,9 +286,16 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}()
 
-	// Channel discovery uses cutoff date when configured (backlog-friendly).
-	// If no cutoff is set, retention threshold is used as discovery window.
-	since := BuildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
+	// Discovery window: for brand-new channels (no existing downloads) with a
+	// cutoff date, use the cutoff so the initial backlog is fetched. For active
+	// channels, use max(cutoff, retention) so the window stays bounded and we
+	// don't re-attempt videos that were previously downloaded and pruned.
+	var since time.Time
+	if len(channel.DownloadedVideos) == 0 && !channel.CutoffDate.IsZero() {
+		since = NormalizeToUTC(channel.CutoffDate).Add(-time.Second)
+	} else {
+		since = BuildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
+	}
 	if since.IsZero() {
 		logScopef("channel", channel.ID, channel.Name, "Checking channel feed for new videos (since: none)")
 	} else {
@@ -322,6 +329,38 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	}
 
 	logScopef("channel", channel.ID, channel.Name, "Eligibility result: %d to download, %d already tracked/skipped", len(videosToDownload), skippedCount)
+
+	// One-time migration for channels upgraded from a schema without pruned_video_ids.
+	// PrunedVideoIDs == nil means the field was never written (old data); treat videos
+	// published before our most-recent tracked download as already-pruned so we don't
+	// hammer YouTube with re-download attempts for content we've already processed.
+	if channel.PrunedVideoIDs == nil && len(videosToDownload) > 0 {
+		var latestPublish time.Time
+		for _, dv := range channel.DownloadedVideos {
+			if dv.PublishDate.After(latestPublish) {
+				latestPublish = dv.PublishDate
+			}
+		}
+
+		var migrateIDs []string
+		var fresh []VideoInfo
+		for _, video := range videosToDownload {
+			if !latestPublish.IsZero() && video.PublishTime.Before(latestPublish) {
+				migrateIDs = append(migrateIDs, video.ID)
+				skippedCount++
+			} else {
+				fresh = append(fresh, video)
+			}
+		}
+
+		if len(migrateIDs) > 0 {
+			logScopef("channel", channel.ID, channel.Name, "One-time migration: marking %d previously-seen videos as pruned (pre-dates latest tracked download)", len(migrateIDs))
+		}
+		if err := storage.MigratePrunedVideoIDs(channel.ID, migrateIDs); err != nil {
+			logScopef("channel", channel.ID, channel.Name, "Migration error: %v", err)
+		}
+		videosToDownload = fresh
+	}
 
 	// If no videos need downloading, return early without creating directory
 	if len(videosToDownload) == 0 {

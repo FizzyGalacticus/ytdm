@@ -294,6 +294,38 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 	return false
 }
 
+// MigratePrunedVideoIDs is a one-time migration helper for channels upgraded from
+// a schema that did not have the pruned_video_ids field. It only runs when
+// PrunedVideoIDs is nil (never initialized); after this call the slice is non-nil
+// so the migration never fires again. Pass the video IDs to treat as already seen.
+func (s *Storage) MigratePrunedVideoIDs(channelID string, videoIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		if s.data.Channels[i].PrunedVideoIDs != nil {
+			return nil // Already initialized, no migration needed.
+		}
+		seen := map[string]struct{}{}
+		result := make([]string, 0, len(videoIDs))
+		for _, id := range videoIDs {
+			if id == "" {
+				continue
+			}
+			if _, dup := seen[id]; !dup {
+				seen[id] = struct{}{}
+				result = append(result, id)
+			}
+		}
+		s.data.Channels[i].PrunedVideoIDs = result // non-nil even if empty
+		return s.save()
+	}
+	return nil
+}
+
 // RemoveDownloadedVideo removes a specific video ID from a channel's or video's downloaded list
 func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 	s.mu.Lock()

@@ -35,51 +35,48 @@ func TestBuildChannelSinceTime(t *testing.T) {
 		}
 	})
 
-	t.Run("uses cutoff even when older than retention", func(t *testing.T) {
+	t.Run("uses retention when cutoff is older", func(t *testing.T) {
 		cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(now, 7, cutoff)
-		expected := cutoff.Add(-time.Second)
+		expected := now.AddDate(0, 0, -7).Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 
-	t.Run("cutoff dominates older cutoff example", func(t *testing.T) {
+	t.Run("retention dominates older cutoff example", func(t *testing.T) {
 		exampleNow := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
 		cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(exampleNow, 3, cutoff)
-		expected := cutoff.Add(-time.Second)
+		expected := exampleNow.AddDate(0, 0, -3).Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 }
 
-func TestChannelEligibilityHonorsCutoffWhenConfigured(t *testing.T) {
+func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
 	now := time.Date(2026, 3, 23, 12, 0, 0, 0, time.UTC)
 	cutoff := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
 	retention := 7
 
 	since := BuildChannelSinceTime(now, retention, cutoff)
 
+	// Cutoff is newer than retention window (Mar 20 vs Mar 16), so cutoff wins.
 	publishBeforeCutoff := time.Date(2026, 3, 19, 0, 0, 0, 0, time.UTC)
 	if !publishBeforeCutoff.Before(since) {
-		t.Fatalf("video published before cutoff should be before since threshold, got %v vs since %v", publishBeforeCutoff, since)
+		t.Fatalf("video published before cutoff should be ineligible, got %v vs since %v", publishBeforeCutoff, since)
 	}
 
-	publishAtCutoff := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
-	if !publishAtCutoff.After(since) {
-		t.Fatalf("video published at cutoff should be eligible (after since), got %v vs since %v", publishAtCutoff, since)
+	publishAfterCutoff := time.Date(2026, 3, 21, 0, 0, 0, 0, time.UTC)
+	if !publishAfterCutoff.After(since) {
+		t.Fatalf("video published after cutoff should be eligible, got %v vs since %v", publishAfterCutoff, since)
 	}
 
+	// Old video before cutoff should not be eligible even though in retention window.
 	publishOldButInRetention := time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC)
 	if !publishOldButInRetention.Before(since) {
-		t.Fatalf("expected video before cutoff to be ineligible, got %v vs since %v", publishOldButInRetention, since)
-	}
-
-	publishBeforeRetentionButAfterCutoff := time.Date(2026, 3, 20, 1, 0, 0, 0, time.UTC)
-	if !publishBeforeRetentionButAfterCutoff.After(since) {
-		t.Fatalf("expected video after cutoff to be eligible even when older than retention window, got %v vs since %v", publishBeforeRetentionButAfterCutoff, since)
+		t.Fatalf("video before cutoff should be ineligible even if in retention window, got %v vs since %v", publishOldButInRetention, since)
 	}
 }
 
