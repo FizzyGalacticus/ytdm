@@ -36,6 +36,18 @@ function hmsToGoDuration(h, m, s) {
 
 // API base URL
 const API_BASE = '/api';
+const activeLogFilter = { scopeType: '', scopeID: '' };
+let knownLogScopes = [];
+
+function hashColorFromScopeKey(scopeKey) {
+    let hash = 0;
+    for (let i = 0; i < scopeKey.length; i++) {
+        hash = ((hash << 5) - hash) + scopeKey.charCodeAt(i);
+        hash |= 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    return `hsl(${hue} 70% 62%)`;
+}
 
 // Toast helper
 function showToast(message, isError = false) {
@@ -88,7 +100,9 @@ async function loadChannels() {
         const response = await fetch(`${API_BASE}/channels`);
         const data = await response.json();
         if (data.success) {
-            const channels = data.data || [];
+            const channels = (data.data || []).slice().sort((a, b) =>
+                (a.name || '').localeCompare((b.name || ''), undefined, { sensitivity: 'base' })
+            );
             if (channels.length === 0) {
                 document.getElementById('channelsList').innerHTML = '<p class="text-muted">No channels configured</p>';
             } else {
@@ -102,6 +116,8 @@ async function loadChannels() {
                     const formatText = ch.video_format 
                         ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
                         : '';
+                    const downloadedCount = (ch.downloaded_videos || []).length;
+                    const collapseId = `channel-collapse-${idx}`;
                     const pruningText = ch.disable_pruning
                         ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
                         : '';
@@ -124,31 +140,65 @@ async function loadChannels() {
                             </div>
                         ` 
                         : '';
-                    return `
-                        <div class="d-flex justify-content-between align-items-start border-bottom py-3">
-                            <div style="flex-grow: 1;">
-                                <strong>${ch.name}</strong>
-                                <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
-                                ${cutoffText}
-                                ${qualityText}
-                                ${formatText}
-                                ${pruningText}
-                                ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
-                                ${errorBadge}<br>
-                                <small class="text-muted">${ch.url}</small><br>
-                                <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
-                                ${errorSection}
+
+                    const downloadedVideos = (ch.downloaded_videos || []).slice().sort((a, b) =>
+                        new Date(b.download_date || 0) - new Date(a.download_date || 0)
+                    );
+                    const childrenHtml = downloadedVideos.length === 0
+                        ? '<div class="text-muted small py-2">No downloaded videos tracked for this channel yet</div>'
+                        : downloadedVideos.map((video) => `
+                            <div class="d-flex justify-content-between align-items-center border-bottom py-2">
+                                <div style="flex-grow: 1;">
+                                    <strong>${video.title || video.id}</strong>
+                                    <div class="small text-muted">Downloaded: ${formatDate(video.download_date)}</div>
+                                </div>
+                                <div class="ms-2">
+                                    <a href="https://www.youtube.com/watch?v=${video.id}" target="_blank" class="btn btn-outline-primary btn-sm me-1">
+                                        <i class="bi bi-youtube"></i>
+                                    </a>
+                                    <button class="btn btn-sm ${video.disable_pruning ? 'btn-outline-warning' : 'btn-outline-secondary'}" onclick="setChannelVideoPruning('${ch.id}', '${video.id}', ${!video.disable_pruning})">
+                                        <i class="bi ${video.disable_pruning ? 'bi-unlock' : 'bi-lock'}"></i>
+                                    </button>
+                                </div>
                             </div>
-                            <div class="ms-3">
-                                <button class="btn btn-info btn-sm me-2" onclick="showChannelVideos('${ch.id}', '${escapeHtml(ch.name)}')">
-                                    <i class="bi bi-film"></i> Videos
-                                </button>
-                                <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
-                                    <i class="bi bi-pencil"></i> Edit
-                                </button>
-                                <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
-                                    <i class="bi bi-trash"></i> Remove
-                                </button>
+                        `).join('');
+
+                    return `
+                        <div class="channel-row">
+                            <div class="channel-row-header d-flex justify-content-between align-items-start">
+                                <div style="flex-grow: 1;">
+                                    <button class="btn btn-sm btn-outline-light me-2" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
+                                        <i class="bi bi-chevron-expand"></i>
+                                    </button>
+                                    <strong>${ch.name}</strong>
+                                    <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
+                                    <span class="badge bg-dark ms-2">${downloadedCount} downloaded</span>
+                                    ${cutoffText}
+                                    ${qualityText}
+                                    ${formatText}
+                                    ${pruningText}
+                                    ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
+                                    ${errorBadge}<br>
+                                    <small class="text-muted">${ch.url}</small><br>
+                                    <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
+                                    ${errorSection}
+                                </div>
+                                <div class="ms-3">
+                                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${escapeHtml(ch.name)}')">
+                                        <i class="bi bi-journal-text"></i> Logs
+                                    </button>
+                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
+                                        <i class="bi bi-pencil"></i> Edit
+                                    </button>
+                                    <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
+                                        <i class="bi bi-trash"></i> Remove
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="${collapseId}" class="collapse channel-children">
+                                <div class="channel-children-inner">
+                                    ${childrenHtml}
+                                </div>
                             </div>
                         </div>
                     `;
@@ -172,9 +222,13 @@ async function loadVideos() {
             } else {
                 document.getElementById('videosList').innerHTML = videos.map((vid, idx) => {
                     const hasError = vid.last_error && vid.last_error.trim().length > 0;
+                    const downloadedCount = (vid.downloaded_videos || []).length;
                     const pruningText = vid.disable_pruning
                         ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
                         : '';
+                    const downloadedText = downloadedCount > 0
+                        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
+                        : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
                     const errorBadge = hasError 
                         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
                         : '';
@@ -201,14 +255,17 @@ async function loadVideos() {
                                 ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
                                 ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
                                 ${pruningText}
-                                ${vid.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
+                                ${downloadedText}
                                 ${errorBadge}<br>
                                 <small class="text-muted">${vid.url}</small><br>
                                 <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
                                 ${errorSection}
                             </div>
                             <div class="ms-3">
-                                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}', ${vid.download_shorts})">
+                                <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
+                                    <i class="bi bi-journal-text"></i> Logs
+                                </button>
+                                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
                                     <i class="bi bi-pencil"></i> Edit
                                 </button>
                                 <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
@@ -273,26 +330,90 @@ async function loadConfig() {
 // Load recent logs
 async function loadLogs() {
     try {
-        const response = await fetch(`${API_BASE}/logs`);
+        const params = new URLSearchParams();
+        if (activeLogFilter.scopeType) {
+            params.set('scope_type', activeLogFilter.scopeType);
+        }
+        if (activeLogFilter.scopeID) {
+            params.set('scope_id', activeLogFilter.scopeID);
+        }
+        const query = params.toString();
+        const response = await fetch(`${API_BASE}/logs${query ? `?${query}` : ''}`);
         const data = await response.json();
         if (!data.success) {
             document.getElementById('logsList').innerHTML = '<span class="text-danger">Failed to load logs</span>';
             return;
         }
 
-        const entries = (data.data && data.data.entries) ? data.data.entries : [];
+        const payload = data.data || {};
+        const entries = payload.structured_entries || [];
+        knownLogScopes = payload.scopes || knownLogScopes;
+        updateLogScopeOptions();
+
         if (entries.length === 0) {
             document.getElementById('logsList').innerHTML = '<span class="text-muted">No logs available yet</span>';
             return;
         }
 
-        document.getElementById('logsList').innerHTML = entries.map((line) => escapeHtml(line)).join('\n');
+        document.getElementById('logsList').innerHTML = entries.map((entry) => {
+            const scopeType = entry.scope_type || '';
+            const scopeID = entry.scope_id || '';
+            const scopeName = entry.scope_name || scopeID;
+            const key = scopeType && scopeID ? `${scopeType}:${scopeID}` : 'global';
+            const scopeColor = hashColorFromScopeKey(key);
+            const label = scopeType && scopeID ? `${scopeType}:${scopeName}` : 'general';
+            return `<div class="log-line" style="border-left-color:${scopeColor};">
+                <span class="scope-pill" style="background:${scopeColor};">${escapeHtml(label)}</span>${escapeHtml(entry.line || '')}
+            </div>`;
+        }).join('');
 
         const logsContainer = document.getElementById('logsList');
         logsContainer.scrollTop = logsContainer.scrollHeight;
     } catch (error) {
         document.getElementById('logsList').innerHTML = '<span class="text-danger">Failed to load logs</span>';
     }
+}
+
+function updateLogScopeOptions() {
+    const typeSelect = document.getElementById('logsScopeType');
+    const idSelect = document.getElementById('logsScopeId');
+    if (!typeSelect || !idSelect) {
+        return;
+    }
+
+    if (activeLogFilter.scopeType) {
+        typeSelect.value = activeLogFilter.scopeType;
+    }
+
+    const selectedType = typeSelect.value;
+    const filteredScopes = knownLogScopes.filter((scope) => !selectedType || scope.type === selectedType);
+    const currentID = activeLogFilter.scopeID;
+
+    idSelect.innerHTML = '<option value="">All channel/video entries</option>' + filteredScopes.map((scope) =>
+        `<option value="${scope.id}">${escapeHtml(scope.type)}: ${escapeHtml(scope.name || scope.id)}</option>`
+    ).join('');
+
+    if (currentID && filteredScopes.some((scope) => scope.id === currentID)) {
+        idSelect.value = currentID;
+    } else {
+        idSelect.value = '';
+        activeLogFilter.scopeID = '';
+    }
+}
+
+function openScopedLogs(scopeType, scopeID, scopeName) {
+    activeLogFilter.scopeType = scopeType;
+    activeLogFilter.scopeID = scopeID;
+    if (!knownLogScopes.some((scope) => scope.type === scopeType && scope.id === scopeID)) {
+        knownLogScopes.push({ type: scopeType, id: scopeID, name: scopeName });
+    }
+    const logsTabTrigger = document.querySelector('#logs-tab');
+    if (logsTabTrigger) {
+        const tab = new bootstrap.Tab(logsTabTrigger);
+        tab.show();
+    }
+    updateLogScopeOptions();
+    loadLogs();
 }
 
 // Save pasted cookies with confirmation
@@ -426,81 +547,6 @@ async function removeChannel(id) {
     }
 }
 
-// Show channel videos modal
-async function showChannelVideos(channelId, channelName) {
-    // Set channel name in modal
-    document.getElementById('channelVideosName').textContent = channelName;
-    
-    // Show loading spinner
-    document.getElementById('channelVideosList').innerHTML = `
-        <div class="text-center">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-        </div>
-    `;
-    
-    // Open modal
-    const modal = new bootstrap.Modal(document.getElementById('channelVideosModal'));
-    modal.show();
-    
-    // Fetch channel data
-    try {
-        const response = await fetch(`${API_BASE}/channels`);
-        const data = await response.json();
-        
-        if (data.success) {
-            const channels = data.data || [];
-            const channel = channels.find(ch => ch.id === channelId);
-            
-            if (channel && channel.downloaded_videos && channel.downloaded_videos.length > 0) {
-                const videos = channel.downloaded_videos;
-                
-                // Sort by download date (newest first)
-                videos.sort((a, b) => new Date(b.download_date) - new Date(a.download_date));
-                
-                document.getElementById('channelVideosCount').textContent = 
-                    `Total: ${videos.length} video${videos.length !== 1 ? 's' : ''}`;
-                
-                document.getElementById('channelVideosList').innerHTML = videos.map((video, idx) => `
-                    <div class="d-flex justify-content-between align-items-center border-bottom py-2 ${idx % 2 === 0 ? 'bg-dark bg-opacity-25' : ''}">
-                        <div style="flex-grow: 1;">
-                            <div class="mb-1">
-                                <strong>${video.title || video.id}</strong>
-                                ${video.title ? `<br><small class="text-muted font-monospace">${video.id}</small>` : ''}
-                            </div>
-                            ${video.disable_pruning ? '<span class="badge bg-warning text-dark mb-1">Keep Indefinitely</span><br>' : ''}
-                            <small class="text-muted">
-                                <i class="bi bi-calendar"></i> Downloaded: ${formatDate(video.download_date)}
-                            </small>
-                        </div>
-                        <div>
-                            <a href="https://www.youtube.com/watch?v=${video.id}" target="_blank" class="btn btn-sm btn-outline-primary me-2">
-                                <i class="bi bi-youtube"></i> Watch
-                            </a>
-                            <button class="btn btn-sm ${video.disable_pruning ? 'btn-outline-warning' : 'btn-outline-secondary'}" onclick="setChannelVideoPruning('${channelId}', '${video.id}', ${!video.disable_pruning})">
-                                <i class="bi ${video.disable_pruning ? 'bi-unlock' : 'bi-lock'}"></i>
-                                ${video.disable_pruning ? 'Enable Pruning' : 'Keep'}
-                            </button>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                document.getElementById('channelVideosCount').textContent = '';
-                document.getElementById('channelVideosList').innerHTML = 
-                    '<p class="text-muted text-center">No videos downloaded yet for this channel</p>';
-            }
-        } else {
-            throw new Error('Failed to fetch channel data');
-        }
-    } catch (error) {
-        console.error('Error loading channel videos:', error);
-        document.getElementById('channelVideosCount').textContent = '';
-        document.getElementById('channelVideosList').innerHTML = 
-            '<p class="text-danger text-center">Failed to load videos</p>';
-    }
-}
-
 // Toggle pruning for a downloaded video in a channel
 async function setChannelVideoPruning(channelId, videoId, disablePruning) {
     try {
@@ -513,7 +559,6 @@ async function setChannelVideoPruning(channelId, videoId, disablePruning) {
         if (data.success) {
             showToast(disablePruning ? 'Video will be kept indefinitely' : 'Video pruning re-enabled');
             await loadChannels();
-            await showChannelVideos(channelId, document.getElementById('channelVideosName').textContent);
         } else {
             showToast(data.message || 'Failed to update video pruning setting', true);
         }
@@ -597,7 +642,6 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
     const retention = parseInt(document.getElementById('videoRetention').value) || 0;
     const quality = document.getElementById('videoQuality').value;
     const format = document.getElementById('videoFormat').value; // Empty string = use global default
-    const downloadShorts = document.getElementById('videoDownloadShorts').checked;
     const disablePruning = document.getElementById('videoDisablePruning').checked;
 
     try {
@@ -609,8 +653,7 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
                 retention_days: retention,
                 disable_pruning: disablePruning,
                 video_quality: quality,
-                video_format: format,
-                download_shorts: downloadShorts
+                video_format: format
             })
         });
         const data = await response.json();
@@ -647,14 +690,13 @@ async function removeVideo(id) {
 }
 
 // Open edit video modal
-function openEditVideoModal(id, title, retentionDays, disablePruning, videoQuality, videoFormat, downloadShorts) {
+function openEditVideoModal(id, title, retentionDays, disablePruning, videoQuality, videoFormat) {
     document.getElementById('editVideoId').value = id;
     document.getElementById('editVideoTitle').value = title;
     document.getElementById('editVideoRetention').value = retentionDays || '';
     document.getElementById('editVideoDisablePruning').checked = !!disablePruning;
     document.getElementById('editVideoQuality').value = videoQuality || '';
     document.getElementById('editVideoFormat').value = videoFormat || '';
-    document.getElementById('editVideoDownloadShorts').checked = !!downloadShorts;
 
     const modal = new bootstrap.Modal(document.getElementById('editVideoModal'));
     modal.show();
@@ -667,14 +709,12 @@ document.getElementById('saveVideoEditsBtn').addEventListener('click', async () 
     const disablePruning = document.getElementById('editVideoDisablePruning').checked;
     const videoQuality = document.getElementById('editVideoQuality').value;
     const videoFormat = document.getElementById('editVideoFormat').value;
-    const downloadShorts = document.getElementById('editVideoDownloadShorts').checked;
 
     const updateData = {
         retention_days: retentionDays,
         disable_pruning: disablePruning,
         video_quality: videoQuality,
-        video_format: videoFormat,
-        download_shorts: downloadShorts
+        video_format: videoFormat
     };
 
     try {
@@ -754,6 +794,25 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
 });
 
 document.getElementById('refreshLogsBtn').addEventListener('click', () => {
+    loadLogs();
+});
+
+document.getElementById('logsScopeType').addEventListener('change', (e) => {
+    activeLogFilter.scopeType = e.target.value;
+    activeLogFilter.scopeID = '';
+    updateLogScopeOptions();
+    loadLogs();
+});
+
+document.getElementById('logsScopeId').addEventListener('change', (e) => {
+    activeLogFilter.scopeID = e.target.value;
+    loadLogs();
+});
+
+document.getElementById('clearLogFilterBtn').addEventListener('click', () => {
+    activeLogFilter.scopeType = '';
+    activeLogFilter.scopeID = '';
+    updateLogScopeOptions();
     loadLogs();
 });
 

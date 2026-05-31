@@ -5,16 +5,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
-
-// filenameDatePatternNew matches YYYY-MM-DD at the start of a filename (current format).
-var filenameDatePatternNew = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})(?:\D|$)`)
-
-// filenameDatePatternLegacy matches YYYYMMDD at the start of a filename (legacy format).
-var filenameDatePatternLegacy = regexp.MustCompile(`^(\d{8})(?:\D|$)`)
 
 type StartupPruneResult struct {
 	VideosPruned int
@@ -24,7 +17,7 @@ type StartupPruneResult struct {
 }
 
 // RunStartupChannelPruneScan performs a one-time channel file cleanup based on
-// dates parsed from filenames before background listeners start.
+// tracked download dates (or file modtime fallback) before background listeners start.
 func RunStartupChannelPruneScan(config *Config, storage *Storage) StartupPruneResult {
 	return runStartupChannelPruneScanAt(time.Now(), config, storage)
 }
@@ -49,7 +42,7 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 		}
 
 		retentionDays := EffectiveRetentionDays(channel.RetentionDays, defaultRetention)
-		if retentionDays <= 0 && channel.CutoffDate.IsZero() {
+		if retentionDays <= 0 {
 			continue
 		}
 
@@ -95,14 +88,13 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 				continue
 			}
 
-			videoDate, ok := inferTrackedVideoDate(tracked, matches)
+			videoDate, ok := inferTrackedDownloadDate(tracked, matches)
 			if !ok {
 				continue
 			}
 
 			shouldPruneByRetention := retentionDays > 0 && NormalizeToUTC(videoDate).Before(cutoffTime)
-			shouldPruneByCutoff := ShouldPruneByChannelCutoff(videoDate, channel.CutoffDate)
-			if !shouldPruneByRetention && !shouldPruneByCutoff {
+			if !shouldPruneByRetention {
 				continue
 			}
 
@@ -209,46 +201,25 @@ func findChannelFilesAcrossDirs(entriesByDir map[string][]os.DirEntry, videoID s
 	return matches
 }
 
-func inferTrackedVideoDate(tracked DownloadedVideo, matchedPaths []string) (time.Time, bool) {
-	var earliest time.Time
-	for _, p := range matchedPaths {
-		d, ok := parseDateFromFilename(filepath.Base(p))
-		if !ok {
-			continue
-		}
-		if earliest.IsZero() || d.Before(earliest) {
-			earliest = d
-		}
-	}
-
-	if !earliest.IsZero() {
-		return earliest, true
-	}
-
-	if !tracked.PublishDate.IsZero() {
-		return NormalizeToUTC(tracked.PublishDate), true
-	}
-
+func inferTrackedDownloadDate(tracked DownloadedVideo, matchedPaths []string) (time.Time, bool) {
 	if !tracked.DownloadDate.IsZero() {
 		return NormalizeToUTC(tracked.DownloadDate), true
 	}
 
-	return time.Time{}, false
-}
-
-func parseDateFromFilename(name string) (time.Time, bool) {
-	// Try YYYY-MM-DD at the start of the filename (current format).
-	if match := filenameDatePatternNew.FindStringSubmatch(name); len(match) >= 2 {
-		if t, err := time.Parse("2006-01-02", match[1]); err == nil {
-			return NormalizeToUTC(t), true
+	var earliestModTime time.Time
+	for _, p := range matchedPaths {
+		info, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		modTime := NormalizeToUTC(info.ModTime())
+		if earliestModTime.IsZero() || modTime.Before(earliestModTime) {
+			earliestModTime = modTime
 		}
 	}
 
-	// Fall back to YYYYMMDD at the start of the filename (legacy format).
-	if match := filenameDatePatternLegacy.FindStringSubmatch(name); len(match) >= 2 {
-		if t, err := ParseYouTubeUploadDateUTC(match[1]); err == nil {
-			return t, true
-		}
+	if !earliestModTime.IsZero() {
+		return earliestModTime, true
 	}
 
 	return time.Time{}, false

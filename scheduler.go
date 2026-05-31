@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+func sanitizeScopeValue(v string) string {
+	trimmed := strings.TrimSpace(v)
+	trimmed = strings.ReplaceAll(trimmed, "]", "")
+	trimmed = strings.ReplaceAll(trimmed, "\n", " ")
+	trimmed = strings.ReplaceAll(trimmed, "\r", " ")
+	if trimmed == "" {
+		return "unknown"
+	}
+	return trimmed
+}
+
+func logScopef(scopeType, scopeID, scopeName, format string, args ...interface{}) {
+	prefix := fmt.Sprintf("[scope:%s:%s:%s]", sanitizeScopeValue(scopeType), sanitizeScopeValue(scopeID), sanitizeScopeValue(scopeName))
+	log.Printf(prefix+" "+format, args...)
+}
+
 // RunScheduler continuously checks for new videos and manages downloads
 func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 	downloader := NewDownloader(config)
@@ -187,7 +203,7 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 			defer func() { <-cleanupSemaphore }()
 
 			if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, retentionDays, ch.CutoffDate, storage); err != nil {
-				log.Printf("Error cleaning old videos for channel %s: %v", ch.Name, err)
+				logScopef("channel", ch.ID, ch.Name, "Error cleaning old videos for channel %s: %v", ch.Name, err)
 			}
 		}(channel)
 	}
@@ -220,13 +236,13 @@ func cleanupOldVideos(ctx context.Context, channels []Channel, videos []Video, d
 
 			removed, err := downloader.CleanOldVideosForVideo(video.Title, video.ID, retentionDays, storage)
 			if err != nil {
-				log.Printf("Error cleaning old videos for video %s: %v", video.Title, err)
+				logScopef("video", video.ID, video.Title, "Error cleaning old videos for video %s: %v", video.Title, err)
 				return
 			}
 
 			if removed {
 				if err := storage.RemoveVideo(video.ID); err != nil {
-					log.Printf("Error removing pruned video entry %s: %v", video.Title, err)
+					logScopef("video", video.ID, video.Title, "Error removing pruned video entry %s: %v", video.Title, err)
 				}
 			}
 		}(vid)
@@ -240,7 +256,7 @@ waitForCleanup:
 // processChannel checks a channel for new videos and downloads them
 func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader) (err error) {
 	effectiveRetention := EffectiveRetentionDays(channel.RetentionDays, getDefaultRetentionDays(downloader))
-	log.Printf("Processing channel: %s (retention: %d days)", channel.Name, effectiveRetention)
+	logScopef("channel", channel.ID, channel.Name, "Processing channel: %s (retention: %d days)", channel.Name, effectiveRetention)
 
 	downloadCount := 0
 	skippedCount := 0
@@ -249,11 +265,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 
 	defer func() {
 		if err != nil {
-			log.Printf("Finished channel %s with error: %v (downloaded=%d, skipped=%d, failed=%d)", channel.Name, err, downloadCount, skippedCount, failedDownloadCount)
+			logScopef("channel", channel.ID, channel.Name, "Finished channel %s with error: %v (downloaded=%d, skipped=%d, failed=%d)", channel.Name, err, downloadCount, skippedCount, failedDownloadCount)
 			return
 		}
 
-		log.Printf("Finished channel %s (downloaded=%d, skipped=%d, failed=%d)", channel.Name, downloadCount, skippedCount, failedDownloadCount)
+		logScopef("channel", channel.ID, channel.Name, "Finished channel %s (downloaded=%d, skipped=%d, failed=%d)", channel.Name, downloadCount, skippedCount, failedDownloadCount)
 	}()
 
 	if !storage.HasChannel(channel.ID) {
@@ -266,25 +282,34 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			return
 		}
 		if err := storage.UpdateChannelLastChecked(channel.ID, time.Now()); err != nil {
-			log.Printf("Failed to update channel last checked time: %v", err)
+			logScopef("channel", channel.ID, channel.Name, "Failed to update channel last checked time: %v", err)
 		}
 	}()
 
-	// Channel download eligibility requires both:
-	// 1) publish date after cutoff date
-	// 2) publish date within now-retention window
+	// Channel discovery uses cutoff date when configured (backlog-friendly).
+	// If no cutoff is set, retention threshold is used as discovery window.
 	since := BuildChannelSinceTime(time.Now(), effectiveRetention, channel.CutoffDate)
+	if since.IsZero() {
+		logScopef("channel", channel.ID, channel.Name, "Checking channel feed for new videos (since: none)")
+	} else {
+		logScopef("channel", channel.ID, channel.Name, "Checking channel feed for new videos (since: %s)", since.Format(time.RFC3339))
+	}
 
 	// Always try fast index (RSS) first, then fall back to yt-dlp
 	var videos []VideoInfo
+	feedSource := "rss"
 	videos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since)
 	if err != nil {
+		logScopef("channel", channel.ID, channel.Name, "RSS feed lookup failed, falling back to yt-dlp: %v", err)
+		feedSource = "yt-dlp"
 		videos, err = downloader.GetChannelVideos(channel.URL, since)
 	}
 
 	if err != nil {
 		return err
 	}
+
+	logScopef("channel", channel.ID, channel.Name, "Feed check complete via %s: discovered %d candidate videos", feedSource, len(videos))
 
 	// Filter videos to only those not already downloaded
 	var videosToDownload []VideoInfo
@@ -295,6 +320,8 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			skippedCount++
 		}
 	}
+
+	logScopef("channel", channel.ID, channel.Name, "Eligibility result: %d to download, %d already tracked/skipped", len(videosToDownload), skippedCount)
 
 	// If no videos need downloading, return early without creating directory
 	if len(videosToDownload) == 0 {
@@ -315,21 +342,25 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 
 		// Download the video
+		logScopef("channel", channel.ID, channel.Name, "Attempting download for video %s (%s)", video.ID, video.Title)
 		videoURL := normalizeChannelVideoURL(video.ID)
 		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
 		if err != nil {
+			logScopef("channel", channel.ID, channel.Name, "Download failed for video %s (%s): %v", video.ID, video.Title, err)
 			failedDownloadCount++
 			if firstDownloadErr == nil {
 				firstDownloadErr = err
 			}
 			// Continue with other videos even if one fails
 		} else if result != nil && result.Skipped {
+			logScopef("channel", channel.ID, channel.Name, "Skipped video %s (%s): %s", video.ID, video.Title, result.SkipReason)
 			skippedCount++
 		} else {
 			// Mark as downloaded
 			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title, video.PublishTime); err != nil {
-				log.Printf("Failed to mark video as downloaded: %v", err)
+				logScopef("channel", channel.ID, channel.Name, "Failed to mark video as downloaded: %v", err)
 			}
+			logScopef("channel", channel.ID, channel.Name, "Downloaded video %s (%s)", video.ID, video.Title)
 			downloadCount++
 		}
 	}
@@ -442,9 +473,22 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	// Only query API if we don't have cached uploader info
 	if channelName == "" {
+		videoInfo, liteErr := downloader.GetVideoInfoLite(video.URL)
+		if liteErr == nil {
+			channelName = strings.TrimSpace(videoInfo.Uploader)
+			if channelName == "" {
+				channelName = strings.TrimSpace(videoInfo.UploaderID)
+			}
+			video.Uploader = strings.TrimSpace(videoInfo.Uploader)
+			video.UploaderID = strings.TrimSpace(videoInfo.UploaderID)
+		}
+	}
+
+	// Only query yt-dlp if lightweight metadata path cannot provide uploader context.
+	if channelName == "" {
 		videoInfo, err := downloader.GetVideoInfo(video.URL)
 		if err != nil {
-			log.Printf("Failed to resolve channel metadata for video %s: %v", video.Title, err)
+			logScopef("video", video.ID, video.Title, "Failed to resolve channel metadata for video %s: %v", video.Title, err)
 			return err
 		}
 
@@ -460,7 +504,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	if channelName == "" {
-		log.Printf("Failed to determine channel name for video %s", video.Title)
+		logScopef("video", video.ID, video.Title, "Failed to determine channel name for video %s", video.Title)
 		return fmt.Errorf("could not determine channel name for video %s", video.Title)
 	}
 
@@ -468,21 +512,21 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 		return nil
 	}
 
-	log.Printf("Attempting download for video: %s", video.Title)
+	logScopef("video", video.ID, video.Title, "Attempting download for video: %s", video.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(video.URL)
-	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
+	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, true)
 	if err != nil {
-		log.Printf("Failed to download video %s: %v", video.Title, err)
+		logScopef("video", video.ID, video.Title, "Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval
 		return err
 	}
 
 	if result != nil && result.Skipped {
 		if result.SkipReason != "" {
-			log.Printf("Finished video %s (skipped: %s)", video.Title, result.SkipReason)
+			logScopef("video", video.ID, video.Title, "Finished video %s (skipped: %s)", video.Title, result.SkipReason)
 		} else {
-			log.Printf("Finished video %s (skipped)", video.Title)
+			logScopef("video", video.ID, video.Title, "Finished video %s (skipped)", video.Title)
 		}
 		return nil
 	}
@@ -493,7 +537,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	}
 
 	if downloadedVideoID == "" {
-		log.Printf("Failed to record video %s: could not determine downloaded video ID", video.Title)
+		logScopef("video", video.ID, video.Title, "Failed to record video %s: could not determine downloaded video ID", video.Title)
 		return fmt.Errorf("could not determine downloaded video ID for %s", video.Title)
 	}
 
@@ -507,18 +551,18 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 
 	// Mark as downloaded
 	if err := storage.MarkVideoAsDownloaded(video.ID, downloadedVideoID, downloadedTitle, publishTime); err != nil {
-		log.Printf("Failed to mark video %s as downloaded: %v", video.Title, err)
+		logScopef("video", video.ID, video.Title, "Failed to mark video %s as downloaded: %v", video.Title, err)
 		return err
 	}
 
 	// Cache uploader info so we don't need to re-query yt-dlp on next run
 	if video.Uploader != "" || video.UploaderID != "" {
 		if err := storage.UpdateVideoUploaderInfo(video.ID, video.Uploader, video.UploaderID); err != nil {
-			log.Printf("Failed to cache uploader info for video %s: %v", video.Title, err)
+			logScopef("video", video.ID, video.Title, "Failed to cache uploader info for video %s: %v", video.Title, err)
 		}
 	}
 
-	log.Printf("Finished video %s (downloaded)", video.Title)
+	logScopef("video", video.ID, video.Title, "Finished video %s (downloaded)", video.Title)
 
 	return nil
 }

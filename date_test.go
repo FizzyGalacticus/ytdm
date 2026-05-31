@@ -35,27 +35,27 @@ func TestBuildChannelSinceTime(t *testing.T) {
 		}
 	})
 
-	t.Run("uses retention when cutoff is older", func(t *testing.T) {
+	t.Run("uses cutoff even when older than retention", func(t *testing.T) {
 		cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(now, 7, cutoff)
-		expected := now.AddDate(0, 0, -7).Add(-time.Second)
+		expected := cutoff.Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 
-	t.Run("retention dominates older cutoff example", func(t *testing.T) {
+	t.Run("cutoff dominates older cutoff example", func(t *testing.T) {
 		exampleNow := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
 		cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(exampleNow, 3, cutoff)
-		expected := exampleNow.AddDate(0, 0, -3).Add(-time.Second)
+		expected := cutoff.Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 }
 
-func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
+func TestChannelEligibilityHonorsCutoffWhenConfigured(t *testing.T) {
 	now := time.Date(2026, 3, 23, 12, 0, 0, 0, time.UTC)
 	cutoff := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
 	retention := 7
@@ -74,7 +74,12 @@ func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
 
 	publishOldButInRetention := time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC)
 	if !publishOldButInRetention.Before(since) {
-		t.Fatalf("expected old but in-retention video (before cutoff) to be ineligible, got %v vs since %v", publishOldButInRetention, since)
+		t.Fatalf("expected video before cutoff to be ineligible, got %v vs since %v", publishOldButInRetention, since)
+	}
+
+	publishBeforeRetentionButAfterCutoff := time.Date(2026, 3, 20, 1, 0, 0, 0, time.UTC)
+	if !publishBeforeRetentionButAfterCutoff.After(since) {
+		t.Fatalf("expected video after cutoff to be eligible even when older than retention window, got %v vs since %v", publishBeforeRetentionButAfterCutoff, since)
 	}
 }
 
@@ -93,51 +98,6 @@ func TestStrictChannelRetentionWithoutCutoff(t *testing.T) {
 	if !publishRecent.After(since) {
 		t.Fatalf("video from 2 days ago should be eligible with 7-day retention, got %v vs since %v", publishRecent, since)
 	}
-}
-
-func TestShouldPruneByChannelCutoff(t *testing.T) {
-	cutoff := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
-
-	t.Run("zero cutoff", func(t *testing.T) {
-		if ShouldPruneByChannelCutoff(time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC), time.Time{}) {
-			t.Fatal("expected false when cutoff date is zero")
-		}
-	})
-
-	t.Run("zero publish date", func(t *testing.T) {
-		if ShouldPruneByChannelCutoff(time.Time{}, cutoff) {
-			t.Fatal("expected false when publish date is zero")
-		}
-	})
-
-	t.Run("before cutoff", func(t *testing.T) {
-		if !ShouldPruneByChannelCutoff(time.Date(2026, 4, 19, 23, 59, 59, 0, time.UTC), cutoff) {
-			t.Fatal("expected prune for publish date before cutoff")
-		}
-	})
-
-	t.Run("at cutoff", func(t *testing.T) {
-		if ShouldPruneByChannelCutoff(cutoff, cutoff) {
-			t.Fatal("expected no prune when publish date equals cutoff")
-		}
-	})
-
-	t.Run("after cutoff", func(t *testing.T) {
-		if ShouldPruneByChannelCutoff(time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC), cutoff) {
-			t.Fatal("expected no prune when publish date is after cutoff")
-		}
-	})
-
-	t.Run("timezone normalized comparison", func(t *testing.T) {
-		locPlus2 := time.FixedZone("UTC+2", 2*60*60)
-		publishUTC := time.Date(2026, 4, 19, 22, 30, 0, 0, time.UTC)
-		publishPlus2 := publishUTC.In(locPlus2)
-		cutoffPlus2 := cutoff.In(locPlus2)
-
-		if !ShouldPruneByChannelCutoff(publishPlus2, cutoffPlus2) {
-			t.Fatal("expected prune decision to be consistent across timezones")
-		}
-	})
 }
 
 func TestParseYouTubeUploadDateUTC(t *testing.T) {

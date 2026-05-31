@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -368,6 +369,79 @@ func extractVideoIDFromRSSEntry(entry RSSEntry) string {
 	return ""
 }
 
+// GetVideoInfoLite retrieves basic metadata via YouTube oEmbed without invoking yt-dlp.
+// This is preferred for title/uploader lookup when possible.
+func (d *Downloader) GetVideoInfoLite(videoURL string) (*VideoInfo, error) {
+	normalizedURL := normalizeChannelVideoURL(videoURL)
+	oembedURL := "https://www.youtube.com/oembed?format=json&url=" + url.QueryEscape(normalizedURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create oembed request: %v", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch oembed metadata: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("oembed returned status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Title      string `json:"title"`
+		AuthorName string `json:"author_name"`
+		AuthorURL  string `json:"author_url"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("failed to decode oembed metadata: %v", err)
+	}
+
+	info := &VideoInfo{
+		ID:       extractYouTubeVideoID(videoURL),
+		Title:    strings.TrimSpace(payload.Title),
+		Uploader: strings.TrimSpace(payload.AuthorName),
+	}
+
+	if uploaderID := extractChannelIDFromAuthorURL(payload.AuthorURL); uploaderID != "" {
+		info.UploaderID = uploaderID
+	}
+
+	if info.Title == "" {
+		return nil, fmt.Errorf("oembed response missing title")
+	}
+
+	return info, nil
+}
+
+func extractChannelIDFromAuthorURL(authorURL string) string {
+	trimmed := strings.TrimSpace(authorURL)
+	if trimmed == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) >= 2 && parts[0] == "channel" {
+		return strings.TrimSpace(parts[1])
+	}
+	if len(parts) >= 1 && strings.HasPrefix(parts[0], "@") {
+		return strings.TrimSpace(parts[0])
+	}
+
+	return ""
+}
+
 // GetVideoInfo retrieves metadata for a specific video
 func (d *Downloader) GetVideoInfo(videoURL string) (*VideoInfo, error) {
 	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{"--dump-json", videoURL})
@@ -646,6 +720,8 @@ func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*Vide
 		Title:       getStringField(raw, "title"),
 		Description: getStringField(raw, "description"),
 		Uploader:    getStringField(raw, "uploader"),
+		ChannelURL:  getStringField(raw, "channel_url"),
+		ChannelIcon: getStringField(raw, "channel_thumbnail"),
 	}
 
 	if uploadDate, ok := raw["upload_date"].(string); ok && len(uploadDate) >= 8 {
@@ -810,6 +886,8 @@ func (d *Downloader) loadVideoMetadataFromInfoJSONFile(infoPath string) (*VideoM
 		Title:       getStringField(raw, "title"),
 		Description: getStringField(raw, "description"),
 		Uploader:    getStringField(raw, "uploader"),
+		ChannelURL:  getStringField(raw, "channel_url"),
+		ChannelIcon: getStringField(raw, "channel_thumbnail"),
 	}
 
 	if metadata.Uploader == "" {
@@ -987,12 +1065,14 @@ func extractSkipReason(output string) string {
 	return "filtered out or unavailable"
 }
 
-// CleanOldVideosForChannel removes channel videos that are before cutoff date or
-// whose download age exceeds retention days.
+// CleanOldVideosForChannel removes channel videos whose download age exceeds
+// retention days.
 func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, cutoffDate time.Time, storage *Storage) error {
 	if retentionDays <= 0 {
 		return nil
 	}
+
+	_ = cutoffDate // Channel cutoff affects download eligibility, not pruning.
 
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
 	if _, err := os.Stat(channelDir); os.IsNotExist(err) {
@@ -1039,17 +1119,12 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 		}
 
 		shouldPruneByRetention := !trackedVideo.DownloadDate.IsZero() && trackedVideo.DownloadDate.Before(cutoffTime)
-		shouldPruneByCutoff := ShouldPruneByChannelCutoff(trackedVideo.PublishDate, cutoffDate)
 
-		if shouldPruneByRetention || shouldPruneByCutoff {
+		if shouldPruneByRetention {
 			if err := os.Remove(path); err != nil {
-				log.Printf("Failed to remove %s: %v", path, err)
+				logScopef("channel", channelID, channelName, "Failed to prune file %s: %v", path, err)
 			} else {
-				reason := "retention"
-				if shouldPruneByCutoff {
-					reason = "cutoff"
-				}
-				log.Printf("Pruned video file: %s (reason: %s, download_date: %s, publish_date: %s)", path, reason, trackedVideo.DownloadDate, trackedVideo.PublishDate)
+				logScopef("channel", channelID, channelName, "Pruned video file %s (reason: retention, download_date: %s)", path, trackedVideo.DownloadDate)
 			}
 		}
 
@@ -1060,9 +1135,9 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	if err == nil {
 		entries, readErr := os.ReadDir(channelDir)
 		if readErr == nil && len(entries) == 0 {
-			log.Printf("Removing empty channel directory: %s", channelDir)
+			logScopef("channel", channelID, channelName, "Removing empty channel directory: %s", channelDir)
 			if rmErr := os.Remove(channelDir); rmErr != nil {
-				log.Printf("Failed to remove empty directory %s: %v", channelDir, rmErr)
+				logScopef("channel", channelID, channelName, "Failed to remove empty directory %s: %v", channelDir, rmErr)
 			}
 		}
 	}
@@ -1252,6 +1327,8 @@ type VideoMetadata struct {
 	Title       string
 	Description string
 	Uploader    string
+	ChannelURL  string
+	ChannelIcon string
 	UploadDate  string // YYYY-MM-DD
 	Duration    int    // seconds
 	Thumbnail   string
@@ -1286,6 +1363,8 @@ func (d *Downloader) fetchVideoMetadata(videoURL string) (*VideoMetadata, error)
 		Title:       fmt.Sprintf("%v", data["title"]),
 		Description: fmt.Sprintf("%v", data["description"]),
 		Uploader:    fmt.Sprintf("%v", data["uploader"]),
+		ChannelURL:  fmt.Sprintf("%v", data["channel_url"]),
+		ChannelIcon: fmt.Sprintf("%v", data["channel_thumbnail"]),
 	}
 
 	if uploadDate, ok := data["upload_date"].(string); ok && len(uploadDate) >= 8 {
@@ -1314,6 +1393,7 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 
 	videoFile := files[0]
 	nfoPath := strings.TrimSuffix(videoFile, filepath.Ext(videoFile)) + ".nfo"
+	localThumbnail := d.findLocalThumbnailForVideo(channelDir, metadata.ID)
 
 	chaptersXML := ""
 	if len(metadata.Chapters) > 0 {
@@ -1332,6 +1412,29 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 		chaptersXML = "\n" + strings.Join(chapterLines, "\n")
 	}
 
+	thumbXML := ""
+	if localThumbnail != "" {
+		thumbXML += "  <thumb>" + escapeXML(filepath.Base(localThumbnail)) + "</thumb>\n"
+	}
+	if metadata.Thumbnail != "" {
+		thumbXML += "  <thumb aspect=\"poster\">" + escapeXML(metadata.Thumbnail) + "</thumb>\n"
+	}
+
+	actorThumbXML := ""
+	if metadata.ChannelIcon != "" {
+		actorThumbXML = "\n    <thumb>" + escapeXML(metadata.ChannelIcon) + "</thumb>"
+	}
+
+	studioXML := ""
+	if metadata.Uploader != "" {
+		studioXML = "\n  <studio>" + escapeXML(metadata.Uploader) + "</studio>"
+	}
+
+	channelURLXML := ""
+	if metadata.ChannelURL != "" {
+		channelURLXML = "\n  <url>" + escapeXML(metadata.ChannelURL) + "</url>"
+	}
+
 	// Create NFO XML content
 	nfoContent := `<?xml version="1.0" encoding="UTF-8"?>
 <movie>
@@ -1339,7 +1442,7 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
   <plot>` + escapeXML(metadata.Description) + `</plot>
   <director>` + escapeXML(metadata.Uploader) + `</director>
   <actor>
-    <name>` + escapeXML(metadata.Uploader) + `</name>
+    <name>` + escapeXML(metadata.Uploader) + `</name>` + actorThumbXML + `
   </actor>
   <credits>` + escapeXML(metadata.Uploader) + `</credits>
   <year>` + strings.Split(metadata.UploadDate, "-")[0] + `</year>
@@ -1347,6 +1450,7 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
   <aired>` + metadata.UploadDate + `</aired>
   <runtime>` + fmt.Sprintf("%d", metadata.Duration/60) + `</runtime>
   <uniqueid type="youtube">` + metadata.ID + `</uniqueid>
+` + thumbXML + studioXML + channelURLXML + `
 ` + chaptersXML + `
 </movie>`
 
@@ -1356,6 +1460,29 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 
 	log.Printf("Generated NFO file: %s", nfoPath)
 	return nil
+}
+
+func (d *Downloader) findLocalThumbnailForVideo(channelDir, videoID string) string {
+	if videoID == "" {
+		return ""
+	}
+
+	patterns := []string{
+		filepath.Join(channelDir, "*"+videoID+"*.jpg"),
+		filepath.Join(channelDir, "*"+videoID+"*.jpeg"),
+		filepath.Join(channelDir, "*"+videoID+"*.png"),
+		filepath.Join(channelDir, "*"+videoID+"*.webp"),
+	}
+
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			continue
+		}
+		return matches[0]
+	}
+
+	return ""
 }
 
 // escapeXML escapes special XML characters

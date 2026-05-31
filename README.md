@@ -10,6 +10,9 @@ Automated YouTube video downloader with channel monitoring, retention management
 - Monitor YouTube channels and automatically download new videos
 - Per-channel and per-video retention policies with cutoff dates
 - Web UI for configuration and management
+- Channels list sorted alphabetically with expandable downloaded-video panels
+- Download status indicator for individually tracked videos
+- Color-coded scoped logs with channel/video filtering
 - REST API for programmatic control
 - Cookie support for bypassing rate limits
 - Automatic yt-dlp updates
@@ -98,13 +101,15 @@ Each channel can override the global retention with its own retention period and
 - **Keep indefinitely (disable pruning)**: Skip automatic pruning for this channel/video entry
 - **Cutoff Date**: Only download videos published on or after this date
 
-Channel monitoring downloads videos only when both conditions are true:
+Channel monitoring discovery behavior:
 
-- `publish_date >= cutoff_date` (when cutoff is set)
-- `publish_date >= now - retention_days` (using channel retention, or global retention when channel retention is unset)
+- If `cutoff_date` is set: videos on/after `cutoff_date` are eligible for first-time download (cutoff-first backlog behavior)
+- If `cutoff_date` is not set: discovery uses `publish_date >= now - retention_days`
 
 Single-entry requested videos are always attempted when present in the list (publish date is not used as a download gate for single entries).
 Pruning is based on download age (`now - retention_days`), with per-entry No Prune still respected.
+Channel cutoff date is used for channel discovery eligibility and does not trigger pruning by publish date.
+For channel entries, videos already downloaded and later pruned are tracked in persistence to prevent re-download loops.
 
 ## Cookie Support
 
@@ -146,6 +151,8 @@ Example format:
 
 ### Status
 - `GET /api/status` - Service status
+- `GET /api/logs` - Recent logs
+  - Optional query params: `scope_type=channel|video`, `scope_id=<id>`
 
 ## Directory Structure
 
@@ -249,6 +256,7 @@ docker build -t ytdm:latest --no-cache .
 ### Status
 
 - `GET /api/status` - Get service status
+- `GET /api/logs` - Get recent logs (supports `scope_type` and `scope_id` filters)
 
 ## Directory Structure
 
@@ -287,6 +295,14 @@ All operations are logged to stdout, including:
 - API requests
 - Configuration changes
 - Errors and warnings
+
+The web UI logs tab supports:
+- Color-coded channel/video scoped log lines
+- Structured filtering by channel or individual video entry
+- Jump-to-logs actions from the Channels and Videos views
+- Channel-scoped lifecycle visibility including feed checks, download attempts, download outcomes, and channel prune events
+
+Metadata lookups prioritize non-yt-dlp sources first (for example, YouTube oEmbed) and only fall back to yt-dlp when required.
 
 ## Error Handling
 

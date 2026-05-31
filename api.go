@@ -96,13 +96,24 @@ func (api *APIServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entries := []string{}
+	structuredEntries := []LogEntry{}
+	scopes := []LogScope{}
+	scopeType := strings.TrimSpace(r.URL.Query().Get("scope_type"))
+	scopeID := strings.TrimSpace(r.URL.Query().Get("scope_id"))
 	if api.logs != nil {
-		entries = api.logs.GetEntries()
+		structuredEntries = api.logs.GetStructuredEntries(scopeType, scopeID)
+		entries = make([]string, 0, len(structuredEntries))
+		for _, entry := range structuredEntries {
+			entries = append(entries, entry.Line)
+		}
+		scopes = api.logs.GetScopes()
 	}
 
 	api.sendSuccess(w, map[string]interface{}{
-		"entries": entries,
-		"count":   len(entries),
+		"entries":            entries,
+		"structured_entries": structuredEntries,
+		"scopes":             scopes,
+		"count":              len(entries),
 	})
 }
 
@@ -134,14 +145,18 @@ func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve canonical channel ID (UC...) so RSS lookups work for @handle URLs.
 	if channel.URL != "" {
-		downloader := NewDownloader(api.config)
-		resolvedID, err := downloader.ResolveChannelID(channel.URL)
-		if err == nil && resolvedID != "" {
-			channel.ID = resolvedID
-		} else if channel.ID == "" {
-			channel.ID = extractIDFromURL(channel.URL)
-			if err != nil {
-				log.Printf("Warning: failed to resolve canonical channel ID for %s, using fallback id %s: %v", channel.URL, channel.ID, err)
+		if extractedID, err := extractChannelID(channel.URL); err == nil && strings.HasPrefix(extractedID, "UC") {
+			channel.ID = extractedID
+		} else {
+			downloader := NewDownloader(api.config)
+			resolvedID, resolveErr := downloader.ResolveChannelID(channel.URL)
+			if resolveErr == nil && resolvedID != "" {
+				channel.ID = resolvedID
+			} else if channel.ID == "" {
+				channel.ID = extractIDFromURL(channel.URL)
+				if resolveErr != nil {
+					log.Printf("Warning: failed to resolve canonical channel ID for %s, using fallback id %s: %v", channel.URL, channel.ID, resolveErr)
+				}
 			}
 		}
 	}
@@ -166,7 +181,7 @@ func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Channel added via API: %s", channel.Name)
+	logScopef("channel", channel.ID, channel.Name, "Channel added via API: %s", channel.Name)
 	api.sendSuccess(w, channel)
 }
 
@@ -215,7 +230,7 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove channel: %v", err))
 			return
 		}
-		log.Printf("Channel removed via API: %s", id)
+		logScopef("channel", id, id, "Channel removed via API: %s", id)
 		api.sendSuccess(w, map[string]string{"id": id})
 	case http.MethodPut:
 		api.updateChannel(w, r, id)
@@ -240,7 +255,7 @@ func (api *APIServer) updateChannelDownloadedVideo(w http.ResponseWriter, r *htt
 		return
 	}
 
-	log.Printf("Channel downloaded video updated via API: channel=%s video=%s disable_pruning=%v", channelID, videoID, updateData.DisablePruning)
+	logScopef("channel", channelID, channelID, "Channel downloaded video updated via API: channel=%s video=%s disable_pruning=%v", channelID, videoID, updateData.DisablePruning)
 	api.sendSuccess(w, map[string]interface{}{
 		"channel_id":      channelID,
 		"video_id":        videoID,
@@ -269,7 +284,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	log.Printf("Channel updated via API: %s", id)
+	logScopef("channel", id, id, "Channel updated via API: %s", id)
 	api.sendSuccess(w, map[string]string{"id": id})
 }
 
@@ -305,20 +320,48 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 
 	// Generate ID from URL if not provided
 	if video.ID == "" {
-		video.ID = extractIDFromURL(video.URL)
+		video.ID = extractYouTubeVideoID(video.URL)
+		if video.ID == "" {
+			video.ID = extractIDFromURL(video.URL)
+		}
 	}
 
-	// Fetch video title from yt-dlp if not provided
+	// Fetch video title/uploader via oEmbed first, then fall back to yt-dlp.
 	if video.Title == "" {
 		downloader := NewDownloader(api.config)
-		info, err := downloader.GetVideoInfo(video.URL)
-		if err != nil {
-			api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Failed to fetch video info: %v", err))
-			return
+
+		if liteInfo, liteErr := downloader.GetVideoInfoLite(video.URL); liteErr == nil {
+			video.Title = strings.TrimSpace(liteInfo.Title)
+			if video.ID == "" && strings.TrimSpace(liteInfo.ID) != "" {
+				video.ID = strings.TrimSpace(liteInfo.ID)
+			}
+			if video.Uploader == "" {
+				video.Uploader = strings.TrimSpace(liteInfo.Uploader)
+			}
+			if video.UploaderID == "" {
+				video.UploaderID = strings.TrimSpace(liteInfo.UploaderID)
+			}
+		} else {
+			info, err := downloader.GetVideoInfo(video.URL)
+			if err != nil {
+				api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Failed to fetch video info: %v", err))
+				return
+			}
+			video.Title = strings.TrimSpace(info.Title)
+			if video.ID == "" || video.ID == extractIDFromURL(video.URL) {
+				video.ID = strings.TrimSpace(info.ID) // Use the more reliable ID from yt-dlp
+			}
+			if video.Uploader == "" {
+				video.Uploader = strings.TrimSpace(info.Uploader)
+			}
+			if video.UploaderID == "" {
+				video.UploaderID = strings.TrimSpace(info.UploaderID)
+			}
 		}
-		video.Title = info.Title
-		if video.ID == "" || video.ID == extractIDFromURL(video.URL) {
-			video.ID = info.ID // Use the more reliable ID from yt-dlp
+
+		if video.Title == "" {
+			api.sendError(w, http.StatusBadRequest, "Failed to determine video title")
+			return
 		}
 	}
 
@@ -332,17 +375,15 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 		video.VideoFormat = api.config.DefaultVideoFormat
 	}
 
-	// DownloadShorts defaults to true if not explicitly disabled
-	if !video.DownloadShorts && video.VideoQuality == "" {
-		video.DownloadShorts = true
-	}
+	// Explicit single-video requests should not be blocked by shorts filtering.
+	video.DownloadShorts = true
 
 	if err := api.storage.AddVideo(video); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add video: %v", err))
 		return
 	}
 
-	log.Printf("Video added via API: %s", video.Title)
+	logScopef("video", video.ID, video.Title, "Video added via API: %s", video.Title)
 	api.sendSuccess(w, video)
 }
 
@@ -379,7 +420,7 @@ func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to remove video: %v", err))
 			return
 		}
-		log.Printf("Video removed via API: %s", id)
+		logScopef("video", id, id, "Video removed via API: %s", id)
 		api.sendSuccess(w, map[string]string{"id": id})
 	case http.MethodPut:
 		api.updateVideo(w, r, id)
@@ -403,12 +444,12 @@ func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 
-	if err := api.storage.UpdateVideo(id, updateData.RetentionDays, updateData.DisablePruning, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
+	if err := api.storage.UpdateVideo(id, updateData.RetentionDays, updateData.DisablePruning, updateData.VideoQuality, updateData.VideoFormat, true); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video: %v", err))
 		return
 	}
 
-	log.Printf("Video updated via API: %s", id)
+	logScopef("video", id, id, "Video updated via API: %s", id)
 	api.sendSuccess(w, map[string]string{"id": id})
 }
 

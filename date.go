@@ -46,27 +46,16 @@ func EffectiveRetentionDays(itemRetention, defaultRetention int) int {
 }
 
 func BuildChannelSinceTime(now time.Time, retentionDays int, cutoffDate time.Time) time.Time {
-	var since time.Time
+	if !cutoffDate.IsZero() {
+		// When a cutoff is configured, discovery should honor it directly so
+		// backlog videos since cutoff can still be downloaded at least once.
+		return NormalizeToUTC(cutoffDate).Add(-time.Second)
+	}
 
 	if retentionDays > 0 {
 		retentionThreshold := RetentionCutoff(now, retentionDays)
-		since = retentionThreshold.Add(-time.Second)
+		return retentionThreshold.Add(-time.Second)
 	}
 
-	if !cutoffDate.IsZero() {
-		cutoffSince := NormalizeToUTC(cutoffDate).Add(-time.Second)
-		if since.IsZero() || cutoffSince.After(since) {
-			since = cutoffSince
-		}
-	}
-
-	return since
-}
-
-func ShouldPruneByChannelCutoff(publishDate, cutoffDate time.Time) bool {
-	if cutoffDate.IsZero() || publishDate.IsZero() {
-		return false
-	}
-
-	return NormalizeToUTC(publishDate).Before(NormalizeToUTC(cutoffDate))
+	return time.Time{}
 }

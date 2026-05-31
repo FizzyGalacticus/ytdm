@@ -44,6 +44,46 @@
             line-height: 1.35;
             padding: 0.75rem;
         }
+        .channel-row {
+            border: 1px solid #495057;
+            border-radius: 0.5rem;
+            margin-bottom: 0.75rem;
+            background-color: #24292f;
+        }
+        .channel-row-header {
+            padding: 0.75rem;
+        }
+        .channel-children {
+            border-top: 1px solid #495057;
+            overflow: hidden;
+            will-change: height;
+        }
+        .channel-children-inner {
+            padding: 0.5rem 0.75rem 0.75rem 0.75rem;
+            opacity: 0;
+            transform: translateY(-4px);
+            transition: opacity 220ms ease, transform 220ms ease;
+        }
+        .channel-children.show .channel-children-inner,
+        .channel-children.collapsing .channel-children-inner {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .log-line {
+            padding: 0.2rem 0.4rem;
+            border-left: 4px solid transparent;
+            margin-bottom: 0.1rem;
+            border-radius: 0.25rem;
+        }
+        .log-line .scope-pill {
+            font-size: 0.72rem;
+            font-weight: 600;
+            margin-right: 0.35rem;
+            padding: 0.05rem 0.35rem;
+            border-radius: 0.35rem;
+            color: #101418;
+            display: inline-block;
+        }
     </style>
 </head>
 <body>
@@ -196,14 +236,6 @@
                                         <option value="mkv">MKV</option>
                                     </select>
                                     <small class="text-muted">Video format</small>
-                                </div>
-                                <div class="col-md-2">
-                                    <div class="form-check mt-2">
-                                        <input class="form-check-input" type="checkbox" id="videoDownloadShorts" checked>
-                                        <label class="form-check-label" for="videoDownloadShorts">
-                                            <small>Download shorts</small>
-                                        </label>
-                                    </div>
                                 </div>
                                 <div class="col-md-3">
                                     <div class="form-check mt-2">
@@ -367,6 +399,25 @@
             <div class="tab-pane fade" id="logs-pane" role="tabpanel" aria-labelledby="logs-tab">
                 <div class="card mb-4">
                     <div class="card-body">
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-3">
+                                <select class="form-select form-select-sm" id="logsScopeType">
+                                    <option value="">All scopes</option>
+                                    <option value="channel">Channels</option>
+                                    <option value="video">Individual videos</option>
+                                </select>
+                            </div>
+                            <div class="col-md-5">
+                                <select class="form-select form-select-sm" id="logsScopeId">
+                                    <option value="">All channel/video entries</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-outline-secondary btn-sm w-100" id="clearLogFilterBtn">
+                                    <i class="bi bi-funnel"></i> Clear Filter
+                                </button>
+                            </div>
+                        </div>
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <h5 class="card-title mb-0">Recent Logs (last 100)</h5>
                             <button class="btn btn-outline-light btn-sm" id="refreshLogsBtn">
@@ -375,31 +426,6 @@
                         </div>
                         <div id="logsList" class="logs-container">Loading logs...</div>
                     </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Channel Videos Modal -->
-    <div class="modal fade" id="channelVideosModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content bg-dark">
-                <div class="modal-header border-secondary">
-                    <h5 class="modal-title"><i class="bi bi-film"></i> Downloaded Videos - <span id="channelVideosName"></span></h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="channelVideosCount" class="mb-3 text-muted"></div>
-                    <div id="channelVideosList" style="max-height: 400px; overflow-y: auto;">
-                        <div class="text-center">
-                            <div class="spinner-border text-primary" role="status">
-                                <span class="visually-hidden">Loading...</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer border-secondary">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -523,14 +549,6 @@
                                 <option value="webm">WebM</option>
                                 <option value="mkv">MKV</option>
                             </select>
-                        </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="editVideoDownloadShorts">
-                                <label class="form-check-label" for="editVideoDownloadShorts">
-                                    Download short-format videos
-                                </label>
-                            </div>
                         </div>
                     </form>
                 </div>
