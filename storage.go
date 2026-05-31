@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// PrunedVideo records a video that was downloaded and then pruned, along with its
+// publish date so that expired entries can be evicted from the list over time.
+type PrunedVideo struct {
+	ID          string    `json:"id"`
+	PublishDate time.Time `json:"publish_date"`
+}
+
 // DownloadedVideo tracks a downloaded video with its download date
 type DownloadedVideo struct {
 	ID             string    `json:"id"`
@@ -32,7 +39,7 @@ type Channel struct {
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
-	PrunedVideoIDs   []string          `json:"pruned_video_ids"`     // Video IDs already downloaded then pruned; prevents re-download loops
+	PrunedVideos     []PrunedVideo     `json:"pruned_videos"`        // Videos already downloaded then pruned; prevents re-download loops
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
@@ -270,8 +277,8 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 					return true
 				}
 			}
-			for _, prunedID := range ch.PrunedVideoIDs {
-				if prunedID == videoID {
+			for _, pv := range ch.PrunedVideos {
+				if pv.ID == videoID {
 					return true
 				}
 			}
@@ -294,11 +301,11 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 	return false
 }
 
-// MigratePrunedVideoIDs is a one-time migration helper for channels upgraded from
-// a schema that did not have the pruned_video_ids field. It only runs when
-// PrunedVideoIDs is nil (never initialized); after this call the slice is non-nil
-// so the migration never fires again. Pass the video IDs to treat as already seen.
-func (s *Storage) MigratePrunedVideoIDs(channelID string, videoIDs []string) error {
+// MigratePrunedVideos is a one-time migration helper for channels upgraded from
+// a schema that did not have the pruned_videos field. It only runs when
+// PrunedVideos is nil (never initialized); after this call the slice is non-nil
+// so the migration never fires again. Pass the videos to treat as already seen.
+func (s *Storage) MigratePrunedVideos(channelID string, videos []PrunedVideo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -306,21 +313,55 @@ func (s *Storage) MigratePrunedVideoIDs(channelID string, videoIDs []string) err
 		if s.data.Channels[i].ID != channelID {
 			continue
 		}
-		if s.data.Channels[i].PrunedVideoIDs != nil {
+		if s.data.Channels[i].PrunedVideos != nil {
 			return nil // Already initialized, no migration needed.
 		}
 		seen := map[string]struct{}{}
-		result := make([]string, 0, len(videoIDs))
-		for _, id := range videoIDs {
-			if id == "" {
+		result := make([]PrunedVideo, 0, len(videos))
+		for _, pv := range videos {
+			if pv.ID == "" {
 				continue
 			}
-			if _, dup := seen[id]; !dup {
-				seen[id] = struct{}{}
-				result = append(result, id)
+			if _, dup := seen[pv.ID]; !dup {
+				seen[pv.ID] = struct{}{}
+				result = append(result, pv)
 			}
 		}
-		s.data.Channels[i].PrunedVideoIDs = result // non-nil even if empty
+		s.data.Channels[i].PrunedVideos = result // non-nil even if empty
+		return s.save()
+	}
+	return nil
+}
+
+// TrimPrunedVideos removes entries from a channel's pruned list whose publish
+// dates predate the given since time. Those videos will never re-appear in feed
+// discovery, so there is no reason to keep tracking them.
+func (s *Storage) TrimPrunedVideos(channelID string, since time.Time) error {
+	if since.IsZero() {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		before := len(s.data.Channels[i].PrunedVideos)
+		if before == 0 {
+			return nil
+		}
+		kept := s.data.Channels[i].PrunedVideos[:0]
+		for _, pv := range s.data.Channels[i].PrunedVideos {
+			if !pv.PublishDate.IsZero() && pv.PublishDate.Before(since) {
+				continue // evict: will never re-appear in discovery
+			}
+			kept = append(kept, pv)
+		}
+		if len(kept) == before {
+			return nil // nothing changed
+		}
+		s.data.Channels[i].PrunedVideos = kept
 		return s.save()
 	}
 	return nil
@@ -337,20 +378,24 @@ func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 			// Remove the video from the downloaded list
 			for j := range s.data.Channels[i].DownloadedVideos {
 				if s.data.Channels[i].DownloadedVideos[j].ID == videoID {
+					pruned := PrunedVideo{
+						ID:          s.data.Channels[i].DownloadedVideos[j].ID,
+						PublishDate: s.data.Channels[i].DownloadedVideos[j].PublishDate,
+					}
 					s.data.Channels[i].DownloadedVideos = append(
 						s.data.Channels[i].DownloadedVideos[:j],
 						s.data.Channels[i].DownloadedVideos[j+1:]...,
 					)
 					if videoID != "" {
 						alreadyTracked := false
-						for _, existingID := range s.data.Channels[i].PrunedVideoIDs {
-							if existingID == videoID {
+						for _, existing := range s.data.Channels[i].PrunedVideos {
+							if existing.ID == videoID {
 								alreadyTracked = true
 								break
 							}
 						}
 						if !alreadyTracked {
-							s.data.Channels[i].PrunedVideoIDs = append(s.data.Channels[i].PrunedVideoIDs, videoID)
+							s.data.Channels[i].PrunedVideos = append(s.data.Channels[i].PrunedVideos, pruned)
 						}
 					}
 					return s.save()

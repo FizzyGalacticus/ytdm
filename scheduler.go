@@ -300,6 +300,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		logScopef("channel", channel.ID, channel.Name, "Checking channel feed for new videos (since: none)")
 	} else {
 		logScopef("channel", channel.ID, channel.Name, "Checking channel feed for new videos (since: %s)", since.Format(time.RFC3339))
+		// Evict pruned entries that predate the discovery window — they can never
+		// re-appear in feed results, so there is no reason to keep tracking them.
+		if err := storage.TrimPrunedVideos(channel.ID, since); err != nil {
+			logScopef("channel", channel.ID, channel.Name, "Failed to trim pruned video list: %v", err)
+		}
 	}
 
 	// Always try fast index (RSS) first, then fall back to yt-dlp
@@ -330,11 +335,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 
 	logScopef("channel", channel.ID, channel.Name, "Eligibility result: %d to download, %d already tracked/skipped", len(videosToDownload), skippedCount)
 
-	// One-time migration for channels upgraded from a schema without pruned_video_ids.
-	// PrunedVideoIDs == nil means the field was never written (old data); treat videos
+	// One-time migration for channels upgraded from a schema without pruned_videos.
+	// PrunedVideos == nil means the field was never written (old data); treat videos
 	// published before our most-recent tracked download as already-pruned so we don't
 	// hammer YouTube with re-download attempts for content we've already processed.
-	if channel.PrunedVideoIDs == nil && len(videosToDownload) > 0 {
+	if channel.PrunedVideos == nil && len(videosToDownload) > 0 {
 		var latestPublish time.Time
 		for _, dv := range channel.DownloadedVideos {
 			if dv.PublishDate.After(latestPublish) {
@@ -342,21 +347,21 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			}
 		}
 
-		var migrateIDs []string
+		var migrateVideos []PrunedVideo
 		var fresh []VideoInfo
 		for _, video := range videosToDownload {
 			if !latestPublish.IsZero() && video.PublishTime.Before(latestPublish) {
-				migrateIDs = append(migrateIDs, video.ID)
+				migrateVideos = append(migrateVideos, PrunedVideo{ID: video.ID, PublishDate: video.PublishTime})
 				skippedCount++
 			} else {
 				fresh = append(fresh, video)
 			}
 		}
 
-		if len(migrateIDs) > 0 {
-			logScopef("channel", channel.ID, channel.Name, "One-time migration: marking %d previously-seen videos as pruned (pre-dates latest tracked download)", len(migrateIDs))
+		if len(migrateVideos) > 0 {
+			logScopef("channel", channel.ID, channel.Name, "One-time migration: marking %d previously-seen videos as pruned (pre-dates latest tracked download)", len(migrateVideos))
 		}
-		if err := storage.MigratePrunedVideoIDs(channel.ID, migrateIDs); err != nil {
+		if err := storage.MigratePrunedVideos(channel.ID, migrateVideos); err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Migration error: %v", err)
 		}
 		videosToDownload = fresh

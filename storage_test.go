@@ -328,12 +328,12 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}
-	if len(channels[0].PrunedVideoIDs) != 1 || channels[0].PrunedVideoIDs[0] != videoID {
-		t.Fatalf("expected pruned history to contain %s, got %#v", videoID, channels[0].PrunedVideoIDs)
+	if len(channels[0].PrunedVideos) != 1 || channels[0].PrunedVideos[0].ID != videoID {
+		t.Fatalf("expected pruned history to contain %s, got %#v", videoID, channels[0].PrunedVideos)
 	}
 }
 
-func TestStorageMigratePrunedVideoIDs(t *testing.T) {
+func TestStorageMigratePrunedVideos(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
 
 	storage, err := NewStorage(tmpFile)
@@ -341,12 +341,12 @@ func TestStorageMigratePrunedVideoIDs(t *testing.T) {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add channel with nil PrunedVideoIDs (simulates old schema data).
+	// Add channel with nil PrunedVideos (simulates old schema data).
 	channel := Channel{
-		ID:             "migrate-channel",
-		Name:           "Migrate Channel",
-		URL:            "https://youtube.com/@migrate",
-		PrunedVideoIDs: nil, // explicitly nil = old data
+		ID:           "migrate-channel",
+		Name:         "Migrate Channel",
+		URL:          "https://youtube.com/@migrate",
+		PrunedVideos: nil, // explicitly nil = old data
 	}
 	storage.AddChannel(channel)
 
@@ -355,9 +355,16 @@ func TestStorageMigratePrunedVideoIDs(t *testing.T) {
 		t.Error("expected false before migration")
 	}
 
-	// Run migration with some previously-seen video IDs.
-	if err := storage.MigratePrunedVideoIDs(channel.ID, []string{"old-vid-1", "old-vid-2", "old-vid-1"}); err != nil {
-		t.Fatalf("MigratePrunedVideoIDs() error = %v", err)
+	pub1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	pub2 := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
+
+	// Run migration with some previously-seen videos (with publish dates).
+	if err := storage.MigratePrunedVideos(channel.ID, []PrunedVideo{
+		{ID: "old-vid-1", PublishDate: pub1},
+		{ID: "old-vid-2", PublishDate: pub2},
+		{ID: "old-vid-1", PublishDate: pub1}, // duplicate
+	}); err != nil {
+		t.Fatalf("MigratePrunedVideos() error = %v", err)
 	}
 
 	// After migration, those IDs should be considered downloaded.
@@ -368,7 +375,7 @@ func TestStorageMigratePrunedVideoIDs(t *testing.T) {
 		t.Error("expected true after migration for old-vid-2")
 	}
 
-	// PrunedVideoIDs should be non-nil and deduplicated.
+	// PrunedVideos should be non-nil and deduplicated.
 	channels := storage.GetChannels()
 	var found *Channel
 	for i := range channels {
@@ -379,24 +386,78 @@ func TestStorageMigratePrunedVideoIDs(t *testing.T) {
 	if found == nil {
 		t.Fatal("channel not found after migration")
 	}
-	if found.PrunedVideoIDs == nil {
-		t.Fatal("PrunedVideoIDs should be non-nil after migration")
+	if found.PrunedVideos == nil {
+		t.Fatal("PrunedVideos should be non-nil after migration")
 	}
-	if len(found.PrunedVideoIDs) != 2 {
-		t.Fatalf("expected 2 pruned IDs (deduplicated), got %d: %v", len(found.PrunedVideoIDs), found.PrunedVideoIDs)
+	if len(found.PrunedVideos) != 2 {
+		t.Fatalf("expected 2 pruned videos (deduplicated), got %d: %v", len(found.PrunedVideos), found.PrunedVideos)
 	}
 
 	// Running migration again should be a no-op (already initialized).
-	if err := storage.MigratePrunedVideoIDs(channel.ID, []string{"extra-vid"}); err != nil {
-		t.Fatalf("second MigratePrunedVideoIDs() error = %v", err)
+	if err := storage.MigratePrunedVideos(channel.ID, []PrunedVideo{{ID: "extra-vid"}}); err != nil {
+		t.Fatalf("second MigratePrunedVideos() error = %v", err)
 	}
 	channels = storage.GetChannels()
 	for i := range channels {
 		if channels[i].ID == channel.ID {
-			if len(channels[i].PrunedVideoIDs) != 2 {
-				t.Fatalf("expected migration to be no-op on second call, got %d IDs", len(channels[i].PrunedVideoIDs))
+			if len(channels[i].PrunedVideos) != 2 {
+				t.Fatalf("expected migration to be no-op on second call, got %d videos", len(channels[i].PrunedVideos))
 			}
 		}
+	}
+}
+
+func TestStorageTrimPrunedVideos(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	channel := Channel{
+		ID:   "trim-channel",
+		Name: "Trim Channel",
+		URL:  "https://youtube.com/@trim",
+		PrunedVideos: []PrunedVideo{
+			{ID: "old-vid", PublishDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
+			{ID: "recent-vid", PublishDate: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)},
+			{ID: "no-date-vid", PublishDate: time.Time{}}, // zero date: never evict
+		},
+	}
+	storage.AddChannel(channel)
+
+	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) // old-vid predates this
+
+	if err := storage.TrimPrunedVideos(channel.ID, since); err != nil {
+		t.Fatalf("TrimPrunedVideos() error = %v", err)
+	}
+
+	channels := storage.GetChannels()
+	var found *Channel
+	for i := range channels {
+		if channels[i].ID == channel.ID {
+			found = &channels[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("channel not found after trim")
+	}
+
+	// old-vid should be gone; recent-vid and no-date-vid should remain.
+	if len(found.PrunedVideos) != 2 {
+		t.Fatalf("expected 2 pruned videos after trim, got %d: %v", len(found.PrunedVideos), found.PrunedVideos)
+	}
+	for _, pv := range found.PrunedVideos {
+		if pv.ID == "old-vid" {
+			t.Error("old-vid should have been evicted")
+		}
+	}
+	if storage.IsVideoDownloaded(channel.ID, "old-vid") {
+		t.Error("old-vid should no longer be considered downloaded after trim")
+	}
+	if !storage.IsVideoDownloaded(channel.ID, "recent-vid") {
+		t.Error("recent-vid should still be considered downloaded after trim")
 	}
 }
 
