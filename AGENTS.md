@@ -111,6 +111,10 @@ docker build -t ytdm .
   - update relevant documentation (for example `README.md`, API examples, and operational notes) in the same change where applicable.
   - rebuild the application docker image using docker compose if available
 
+## Git Rules
+
+**Never auto-commit and push directly to `master`.** Always create a feature branch, commit there, and open a PR. Direct commits to `master` bypass review and can immediately break production.
+
 ## Quick Validation Checklist
 
 Before finishing a change:
