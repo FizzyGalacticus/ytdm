@@ -32,6 +32,7 @@ type Channel struct {
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
+	PrunedVideoIDs   []string          `json:"pruned_video_ids"`     // Video IDs already downloaded then pruned; prevents re-download loops
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
@@ -269,6 +270,11 @@ func (s *Storage) IsVideoDownloaded(channelID, videoID string) bool {
 					return true
 				}
 			}
+			for _, prunedID := range ch.PrunedVideoIDs {
+				if prunedID == videoID {
+					return true
+				}
+			}
 			return false
 		}
 	}
@@ -303,6 +309,18 @@ func (s *Storage) RemoveDownloadedVideo(containerID, videoID string) error {
 						s.data.Channels[i].DownloadedVideos[:j],
 						s.data.Channels[i].DownloadedVideos[j+1:]...,
 					)
+					if videoID != "" {
+						alreadyTracked := false
+						for _, existingID := range s.data.Channels[i].PrunedVideoIDs {
+							if existingID == videoID {
+								alreadyTracked = true
+								break
+							}
+						}
+						if !alreadyTracked {
+							s.data.Channels[i].PrunedVideoIDs = append(s.data.Channels[i].PrunedVideoIDs, videoID)
+						}
+					}
 					return s.save()
 				}
 			}

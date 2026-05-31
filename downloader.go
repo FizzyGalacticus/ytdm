@@ -1122,9 +1122,9 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 		if shouldPruneByRetention {
 			if err := os.Remove(path); err != nil {
-				log.Printf("Failed to remove %s: %v", path, err)
+				logScopef("channel", channelID, channelName, "Failed to prune file %s: %v", path, err)
 			} else {
-				log.Printf("Pruned video file: %s (reason: retention, download_date: %s)", path, trackedVideo.DownloadDate)
+				logScopef("channel", channelID, channelName, "Pruned video file %s (reason: retention, download_date: %s)", path, trackedVideo.DownloadDate)
 			}
 		}
 
@@ -1135,9 +1135,9 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	if err == nil {
 		entries, readErr := os.ReadDir(channelDir)
 		if readErr == nil && len(entries) == 0 {
-			log.Printf("Removing empty channel directory: %s", channelDir)
+			logScopef("channel", channelID, channelName, "Removing empty channel directory: %s", channelDir)
 			if rmErr := os.Remove(channelDir); rmErr != nil {
-				log.Printf("Failed to remove empty directory %s: %v", channelDir, rmErr)
+				logScopef("channel", channelID, channelName, "Failed to remove empty directory %s: %v", channelDir, rmErr)
 			}
 		}
 	}

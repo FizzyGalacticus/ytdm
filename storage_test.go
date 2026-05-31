@@ -319,9 +319,17 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 		t.Errorf("Failed to remove downloaded video: %v", err)
 	}
 
-	// Should no longer be marked as downloaded
-	if storage.IsVideoDownloaded(channel.ID, videoID) {
-		t.Error("Video should not be marked as downloaded after removal")
+	// Should still be considered already downloaded due to pruned history tracking.
+	if !storage.IsVideoDownloaded(channel.ID, videoID) {
+		t.Error("Video should remain marked as downloaded after prune removal")
+	}
+
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if len(channels[0].PrunedVideoIDs) != 1 || channels[0].PrunedVideoIDs[0] != videoID {
+		t.Fatalf("expected pruned history to contain %s, got %#v", videoID, channels[0].PrunedVideoIDs)
 	}
 }
 

@@ -35,27 +35,27 @@ func TestBuildChannelSinceTime(t *testing.T) {
 		}
 	})
 
-	t.Run("uses retention when cutoff is older", func(t *testing.T) {
+	t.Run("uses cutoff even when older than retention", func(t *testing.T) {
 		cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(now, 7, cutoff)
-		expected := now.AddDate(0, 0, -7).Add(-time.Second)
+		expected := cutoff.Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 
-	t.Run("retention dominates older cutoff example", func(t *testing.T) {
+	t.Run("cutoff dominates older cutoff example", func(t *testing.T) {
 		exampleNow := time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC)
 		cutoff := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 		since := BuildChannelSinceTime(exampleNow, 3, cutoff)
-		expected := exampleNow.AddDate(0, 0, -3).Add(-time.Second)
+		expected := cutoff.Add(-time.Second)
 		if !since.Equal(expected) {
 			t.Fatalf("expected %v, got %v", expected, since)
 		}
 	})
 }
 
-func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
+func TestChannelEligibilityHonorsCutoffWhenConfigured(t *testing.T) {
 	now := time.Date(2026, 3, 23, 12, 0, 0, 0, time.UTC)
 	cutoff := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
 	retention := 7
@@ -74,7 +74,12 @@ func TestChannelEligibilityEnforcesBothCutoffAndRetention(t *testing.T) {
 
 	publishOldButInRetention := time.Date(2026, 3, 18, 0, 0, 0, 0, time.UTC)
 	if !publishOldButInRetention.Before(since) {
-		t.Fatalf("expected old but in-retention video (before cutoff) to be ineligible, got %v vs since %v", publishOldButInRetention, since)
+		t.Fatalf("expected video before cutoff to be ineligible, got %v vs since %v", publishOldButInRetention, since)
+	}
+
+	publishBeforeRetentionButAfterCutoff := time.Date(2026, 3, 20, 1, 0, 0, 0, time.UTC)
+	if !publishBeforeRetentionButAfterCutoff.After(since) {
+		t.Fatalf("expected video after cutoff to be eligible even when older than retention window, got %v vs since %v", publishBeforeRetentionButAfterCutoff, since)
 	}
 }
 

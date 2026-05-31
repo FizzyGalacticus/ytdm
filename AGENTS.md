@@ -43,9 +43,9 @@ Primary runtime artifacts:
 
 2. Channel download eligibility uses publish date gates:
 - Respect channel `cutoff_date` when set
-- Respect retention threshold (`now - retention_days`, with channel override or global fallback)
-- Both gates are required for channel-discovered videos
-- These publish-date gates control discovery/download eligibility, not pruning of already-downloaded files
+- When `cutoff_date` is set, discovery is cutoff-first (download backlog since cutoff at least once)
+- If `cutoff_date` is not set, use retention threshold (`now - retention_days`) for discovery window
+- Persist pruned channel video IDs so already-downloaded-and-pruned videos are not re-downloaded repeatedly
 
 3. Single video entry behavior differs:
 - Always attempt download when entry exists
