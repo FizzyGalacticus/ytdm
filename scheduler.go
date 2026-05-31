@@ -310,7 +310,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 	// Always try fast index (RSS) first, then fall back to yt-dlp
 	var videos []VideoInfo
 	feedSource := "rss"
-	videos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since)
+	videos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since, channel.DownloadShorts)
 	if err != nil {
 		logScopef("channel", channel.ID, channel.Name, "RSS feed lookup failed, falling back to yt-dlp: %v", err)
 		feedSource = "yt-dlp"

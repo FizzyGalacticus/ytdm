@@ -34,6 +34,13 @@ type RSSEntry struct {
 	Title     string    `xml:"title"`
 	Published time.Time `xml:"published"`
 	VideoID   string    `xml:"http://www.youtube.com/xml/schemas/2015/metadata videoId"`
+	Links     []RSSLink `xml:"link"`
+}
+
+// RSSLink represents an Atom link element in a feed entry.
+type RSSLink struct {
+	Rel  string `xml:"rel,attr"`
+	Href string `xml:"href,attr"`
 }
 
 // VideoInfo represents metadata about a video
@@ -259,7 +266,7 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 // GetChannelVideosFromRSS fetches recent videos from a channel using YouTube's public RSS feed
 // This is much faster than yt-dlp but may miss videos in edge cases
 // Returns VideoInfo for videos published after 'since' time
-func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time) ([]VideoInfo, error) {
+func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time, downloadShorts bool) ([]VideoInfo, error) {
 	resolvedChannelID, err := resolveRSSChannelID(channelID, channelURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract channel ID: %v", err)
@@ -303,6 +310,10 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 	// Convert RSS entries to VideoInfo
 	var videos []VideoInfo
 	for _, entry := range feed.Entries {
+		if !downloadShorts && isShortRSSEntry(entry) {
+			continue
+		}
+
 		// Extract video ID from entry.ID which looks like "yt:video:VIDEO_ID"
 		videoID := extractVideoIDFromRSSEntry(entry)
 		if videoID == "" {
@@ -367,6 +378,42 @@ func extractVideoIDFromRSSEntry(entry RSSEntry) string {
 	}
 
 	return ""
+}
+
+func isShortRSSEntry(entry RSSEntry) bool {
+	lowerID := strings.ToLower(strings.TrimSpace(entry.ID))
+	if strings.HasPrefix(lowerID, "yt:shorts:") {
+		return true
+	}
+
+	for _, link := range entry.Links {
+		if isShortYouTubeURL(link.Href) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isShortYouTubeURL(rawURL string) bool {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return false
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(parsed.Host)
+	host = strings.TrimPrefix(host, "www.")
+	if host != "youtube.com" && host != "m.youtube.com" {
+		return false
+	}
+
+	path := strings.ToLower(strings.TrimSpace(parsed.Path))
+	return strings.HasPrefix(path, "/shorts/")
 }
 
 // GetVideoInfoLite retrieves basic metadata via YouTube oEmbed without invoking yt-dlp.

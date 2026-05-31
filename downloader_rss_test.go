@@ -1,11 +1,28 @@
 package main
 
 import (
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func withMockYouTubeRSSTransport(t *testing.T, fn roundTripFunc) {
+	t.Helper()
+
+	previous := http.DefaultTransport
+	http.DefaultTransport = fn
+	t.Cleanup(func() {
+		http.DefaultTransport = previous
+	})
+}
 
 func TestExtractChannelID(t *testing.T) {
 	tests := []struct {
@@ -113,64 +130,222 @@ func TestExtractVideoIDFromRSSEntry(t *testing.T) {
 	}
 }
 
-func TestGetChannelVideosFromRSS(t *testing.T) {
-	config := DefaultConfig()
-	_ = NewDownloader(config)
+func TestIsShortYouTubeURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			name: "standard watch url",
+			url:  "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			want: false,
+		},
+		{
+			name: "shorts url",
+			url:  "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+			want: true,
+		},
+		{
+			name: "mobile shorts url",
+			url:  "https://m.youtube.com/shorts/dQw4w9WgXcQ",
+			want: true,
+		},
+		{
+			name: "short link host",
+			url:  "https://youtu.be/dQw4w9WgXcQ",
+			want: false,
+		},
+		{
+			name: "invalid url",
+			url:  "://bad-url",
+			want: false,
+		},
+	}
 
-	t.Run("successful RSS parsing", func(t *testing.T) {
-		// Create a mock RSS server
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Get("channel_id") != "UCtest123" {
-				http.Error(w, "wrong channel_id", http.StatusBadRequest)
-				return
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isShortYouTubeURL(tt.url)
+			if got != tt.want {
+				t.Errorf("isShortYouTubeURL(%q) = %v, want %v", tt.url, got, tt.want)
 			}
+		})
+	}
+}
 
-			rssResponse := `<?xml version="1.0" encoding="UTF-8"?>
+func TestIsShortRSSEntry(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry RSSEntry
+		want  bool
+	}{
+		{
+			name: "shorts id prefix",
+			entry: RSSEntry{
+				ID: "yt:shorts:abc123",
+			},
+			want: true,
+		},
+		{
+			name: "shorts alternate link",
+			entry: RSSEntry{
+				ID: "yt:video:abc123",
+				Links: []RSSLink{
+					{Rel: "alternate", Href: "https://www.youtube.com/shorts/abc123"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "regular watch link",
+			entry: RSSEntry{
+				ID: "yt:video:abc123",
+				Links: []RSSLink{
+					{Rel: "alternate", Href: "https://www.youtube.com/watch?v=abc123"},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "no links",
+			entry: RSSEntry{
+				ID: "yt:video:abc123",
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isShortRSSEntry(tt.entry)
+			if got != tt.want {
+				t.Errorf("isShortRSSEntry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGetChannelVideosFromRSS(t *testing.T) {
+	rssXML := `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015/metadata">
   <entry>
-    <id>yt:video:abc123</id>
-    <title>Video 1</title>
+    <id>yt:video:regular001</id>
+    <title>Regular Video</title>
     <published>2026-03-16T10:00:00Z</published>
-    <yt:videoId>abc123</yt:videoId>
+    <yt:videoId>regular001</yt:videoId>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=regular001"/>
   </entry>
   <entry>
-    <id>yt:video:def456</id>
-    <title>Video 2</title>
+    <id>yt:video:short001</id>
+    <title>Short Video</title>
+    <published>2026-03-16T11:00:00Z</published>
+    <yt:videoId>short001</yt:videoId>
+    <link rel="alternate" href="https://www.youtube.com/shorts/short001"/>
+  </entry>
+  <entry>
+    <id>yt:shorts:short-by-id</id>
+    <title>Short by ID Prefix</title>
+    <published>2026-03-16T12:00:00Z</published>
+    <yt:videoId>short-by-id</yt:videoId>
+  </entry>
+  <entry>
+    <id>yt:video:old001</id>
+    <title>Old Video</title>
     <published>2026-03-15T10:00:00Z</published>
-    <yt:videoId>def456</yt:videoId>
+    <yt:videoId>old001</yt:videoId>
+    <link rel="alternate" href="https://www.youtube.com/watch?v=old001"/>
   </entry>
 </feed>`
-			w.Header().Set("Content-Type", "application/xml")
-			w.Write([]byte(rssResponse))
-		}))
-		defer server.Close()
 
-		// Mock the RSS URL by patching the URL construction
-		// Since we can't easily mock HTTP in the current design, we'll test the parsing logic separately
-		// This test verifies the structure is correct
+	withMockYouTubeRSSTransport(t, func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("expected GET request, got %s", req.Method)
+		}
+		if req.URL.Host != "www.youtube.com" {
+			t.Fatalf("expected host www.youtube.com, got %s", req.URL.Host)
+		}
+		if req.URL.Path != "/feeds/videos.xml" {
+			t.Fatalf("expected path /feeds/videos.xml, got %s", req.URL.Path)
+		}
+		if req.URL.Query().Get("channel_id") != "UCtest123" {
+			t.Fatalf("expected channel_id UCtest123, got %s", req.URL.Query().Get("channel_id"))
+		}
+
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/xml"}},
+			Body:       io.NopCloser(strings.NewReader(rssXML)),
+		}, nil
 	})
 
-	t.Run("video filtering by publish date", func(t *testing.T) {
-		since := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
-		entry1 := RSSEntry{
-			ID:        "yt:video:old",
-			Published: time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC),
-			VideoID:   "old",
-		}
-		entry2 := RSSEntry{
-			ID:        "yt:video:new",
-			Published: time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC),
-			VideoID:   "new",
+	downloader := NewDownloader(DefaultConfig())
+	since := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
+
+	t.Run("filters shorts when disabled and applies publish-date cutoff", func(t *testing.T) {
+		videos, err := downloader.GetChannelVideosFromRSS(
+			"UCtest123",
+			"https://www.youtube.com/channel/UCtest123",
+			since,
+			false,
+		)
+		if err != nil {
+			t.Fatalf("GetChannelVideosFromRSS() error = %v", err)
 		}
 
-		// Old video should be filtered out
-		if entry1.Published.After(since) {
-			t.Error("old video should be filtered out")
+		if len(videos) != 1 {
+			t.Fatalf("expected 1 regular recent video, got %d", len(videos))
+		}
+		if videos[0].ID != "regular001" {
+			t.Fatalf("expected video ID regular001, got %s", videos[0].ID)
+		}
+	})
+
+	t.Run("includes shorts when enabled while still applying publish-date cutoff", func(t *testing.T) {
+		videos, err := downloader.GetChannelVideosFromRSS(
+			"UCtest123",
+			"https://www.youtube.com/channel/UCtest123",
+			since,
+			true,
+		)
+		if err != nil {
+			t.Fatalf("GetChannelVideosFromRSS() error = %v", err)
 		}
 
-		// New video should pass the filter
-		if !entry2.Published.After(since) {
-			t.Error("new video should pass the filter")
+		if len(videos) != 3 {
+			t.Fatalf("expected 3 recent videos (regular + shorts), got %d", len(videos))
+		}
+
+		ids := map[string]bool{}
+		for _, v := range videos {
+			ids[v.ID] = true
+		}
+
+		for _, wantID := range []string{"regular001", "short001", "short-by-id"} {
+			if !ids[wantID] {
+				t.Fatalf("expected video ID %s in results", wantID)
+			}
+		}
+	})
+
+	t.Run("returns error on non-200 response", func(t *testing.T) {
+		withMockYouTubeRSSTransport(t, func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusBadGateway,
+				Body:       io.NopCloser(strings.NewReader("bad gateway")),
+			}, nil
+		})
+
+		_, err := downloader.GetChannelVideosFromRSS(
+			"UCtest123",
+			"https://www.youtube.com/channel/UCtest123",
+			since,
+			false,
+		)
+		if err == nil {
+			t.Fatal("expected error for non-200 RSS response")
+		}
+		if !strings.Contains(err.Error(), "status 502") {
+			t.Fatalf("expected status 502 error, got %v", err)
 		}
 	})
 }
