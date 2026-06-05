@@ -591,8 +591,8 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	// Build match filters based on shorts preference
 	var matchFilter string
 	if downloadShorts {
-		// Allow shorts: only exclude live streams and very short videos
-		matchFilter = "!is_live & duration>60"
+		// Allow shorts: only exclude live streams
+		matchFilter = "!is_live"
 	} else {
 		// Exclude shorts: exclude live streams, short videos, and vertical aspect ratio
 		// Use aspect_ratio field which is a proper float comparison

@@ -210,6 +210,142 @@ async function loadChannels() {
     }
 }
 
+function renderVideoRow(vid) {
+    const hasError = vid.last_error && vid.last_error.trim().length > 0;
+    const downloadedCount = (vid.downloaded_videos || []).length;
+    const pruningText = vid.disable_pruning
+        ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
+        : '';
+    const downloadedText = downloadedCount > 0
+        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
+        : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
+    const errorBadge = hasError
+        ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>`
+        : '';
+    const errorSection = hasError
+        ? `
+            <div class="mt-2">
+                <button class="btn btn-sm btn-outline-danger collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#video-error-${vid.id}" aria-expanded="false">
+                    <i class="bi bi-chevron-down"></i> View Error Details
+                </button>
+                <div class="collapse mt-2" id="video-error-${vid.id}">
+                    <div class="alert alert-danger" role="alert">
+                        <strong>Error:</strong> ${vid.last_error}<br>
+                        <small class="text-muted">At: ${formatDate(vid.last_error_time)}</small>
+                    </div>
+                </div>
+            </div>
+        `
+        : '';
+    return `
+        <div class="d-flex justify-content-between align-items-start border-bottom py-3">
+            <div style="flex-grow: 1;">
+                <strong>${vid.title}</strong>
+                <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
+                ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
+                ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
+                ${pruningText}
+                ${downloadedText}
+                ${errorBadge}<br>
+                <small class="text-muted">${vid.url}</small><br>
+                <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
+                ${errorSection}
+            </div>
+            <div class="ms-3">
+                <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
+                    <i class="bi bi-journal-text"></i> Logs
+                </button>
+                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
+                    <i class="bi bi-pencil"></i> Edit
+                </button>
+                <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
+                    <i class="bi bi-trash"></i> Remove
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderVideoGroup(groupName, videos, collapseId) {
+    const sorted = videos.slice().sort((a, b) => new Date(b.added_date || 0) - new Date(a.added_date || 0));
+    const newestDate = sorted[0].added_date;
+    const childrenHtml = sorted.map(vid => {
+        const hasError = vid.last_error && vid.last_error.trim().length > 0;
+        const downloadedCount = (vid.downloaded_videos || []).length;
+        const pruningText = vid.disable_pruning
+            ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
+            : '';
+        const downloadedText = downloadedCount > 0
+            ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
+            : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
+        const errorBadge = hasError
+            ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>`
+            : '';
+        const errorSection = hasError
+            ? `
+                <div class="mt-2">
+                    <button class="btn btn-sm btn-outline-danger collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#video-error-${vid.id}" aria-expanded="false">
+                        <i class="bi bi-chevron-down"></i> View Error Details
+                    </button>
+                    <div class="collapse mt-2" id="video-error-${vid.id}">
+                        <div class="alert alert-danger" role="alert">
+                            <strong>Error:</strong> ${vid.last_error}<br>
+                            <small class="text-muted">At: ${formatDate(vid.last_error_time)}</small>
+                        </div>
+                    </div>
+                </div>
+            `
+            : '';
+        return `
+            <div class="d-flex justify-content-between align-items-start border-bottom py-2">
+                <div style="flex-grow: 1;">
+                    <strong>${vid.title}</strong>
+                    <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
+                    ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
+                    ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
+                    ${pruningText}
+                    ${downloadedText}
+                    ${errorBadge}<br>
+                    <small class="text-muted">${vid.url}</small><br>
+                    <span class="last-checked">Added: ${formatDate(vid.added_date)} · Last checked: ${formatDate(vid.last_checked)}</span>
+                    ${errorSection}
+                </div>
+                <div class="ms-3">
+                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
+                        <i class="bi bi-journal-text"></i> Logs
+                    </button>
+                    <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
+                        <i class="bi bi-pencil"></i> Edit
+                    </button>
+                    <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
+                        <i class="bi bi-trash"></i> Remove
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="channel-row">
+            <div class="channel-row-header d-flex justify-content-between align-items-center">
+                <div style="flex-grow: 1;">
+                    <button class="btn btn-sm btn-outline-light me-2" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
+                        <i class="bi bi-chevron-expand"></i>
+                    </button>
+                    <strong>${escapeHtml(groupName)}</strong>
+                    <span class="badge bg-dark ms-2">${videos.length} videos</span>
+                    <span class="badge bg-secondary ms-2">Latest added: ${formatDate(newestDate)}</span>
+                </div>
+            </div>
+            <div id="${collapseId}" class="collapse channel-children">
+                <div class="channel-children-inner">
+                    ${childrenHtml}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 // Load videos
 async function loadVideos() {
     try {
@@ -220,60 +356,49 @@ async function loadVideos() {
             if (videos.length === 0) {
                 document.getElementById('videosList').innerHTML = '<p class="text-muted">No videos configured</p>';
             } else {
-                document.getElementById('videosList').innerHTML = videos.map((vid, idx) => {
-                    const hasError = vid.last_error && vid.last_error.trim().length > 0;
-                    const downloadedCount = (vid.downloaded_videos || []).length;
-                    const pruningText = vid.disable_pruning
-                        ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
-                        : '';
-                    const downloadedText = downloadedCount > 0
-                        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
-                        : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
-                    const errorBadge = hasError 
-                        ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>` 
-                        : '';
-                    const errorSection = hasError 
-                        ? `
-                            <div class="mt-2">
-                                <button class="btn btn-sm btn-outline-danger collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#video-error-${idx}" aria-expanded="false">
-                                    <i class="bi bi-chevron-down"></i> View Error Details
-                                </button>
-                                <div class="collapse mt-2" id="video-error-${idx}">
-                                    <div class="alert alert-danger" role="alert">
-                                        <strong>Error:</strong> ${vid.last_error}<br>
-                                        <small class="text-muted">At: ${formatDate(vid.last_error_time)}</small>
-                                    </div>
-                                </div>
-                            </div>
-                        ` 
-                        : '';
-                    return `
-                        <div class="d-flex justify-content-between align-items-start border-bottom py-3">
-                            <div style="flex-grow: 1;">
-                                <strong>${vid.title}</strong>
-                                <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
-                                ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
-                                ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
-                                ${pruningText}
-                                ${downloadedText}
-                                ${errorBadge}<br>
-                                <small class="text-muted">${vid.url}</small><br>
-                                <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
-                                ${errorSection}
-                            </div>
-                            <div class="ms-3">
-                                <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
-                                    <i class="bi bi-journal-text"></i> Logs
-                                </button>
-                                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
-                                    <i class="bi bi-pencil"></i> Edit
-                                </button>
-                                <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
-                                    <i class="bi bi-trash"></i> Remove
-                                </button>
-                            </div>
-                        </div>
-                    `;
+                // Group by uploader (uploader_id as fallback key); ungroupable videos stay as singletons
+                const groupMap = new Map();
+                const singletons = [];
+
+                for (const vid of videos) {
+                    const key = vid.uploader || vid.uploader_id || null;
+                    if (key) {
+                        if (!groupMap.has(key)) {
+                            groupMap.set(key, { name: vid.uploader || vid.uploader_id, videos: [] });
+                        }
+                        groupMap.get(key).videos.push(vid);
+                    } else {
+                        singletons.push(vid);
+                    }
+                }
+
+                // Build top-level items: groups with 2+ videos become collapse panels; lone entries become singletons
+                const items = [];
+
+                for (const group of groupMap.values()) {
+                    if (group.videos.length >= 2) {
+                        const maxDate = group.videos.reduce((max, v) => {
+                            const d = new Date(v.added_date || 0);
+                            return d > max ? d : max;
+                        }, new Date(0));
+                        items.push({ type: 'group', name: group.name, videos: group.videos, sortDate: maxDate });
+                    } else {
+                        singletons.push(group.videos[0]);
+                    }
+                }
+
+                for (const vid of singletons) {
+                    items.push({ type: 'single', vid, sortDate: new Date(vid.added_date || 0) });
+                }
+
+                // Sort newest added_date first
+                items.sort((a, b) => b.sortDate - a.sortDate);
+
+                document.getElementById('videosList').innerHTML = items.map((item, idx) => {
+                    if (item.type === 'group') {
+                        return renderVideoGroup(item.name, item.videos, `video-group-${idx}`);
+                    }
+                    return renderVideoRow(item.vid);
                 }).join('');
             }
         }
