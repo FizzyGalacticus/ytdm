@@ -331,3 +331,36 @@ func TestApplyConfigDefaults(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultVideoQualitySaveLoad(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "config.json")
+
+	cfg := DefaultConfig()
+	cfg.DefaultVideoQuality = "1080"
+
+	if err := cfg.Save(tmpFile); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := LoadConfig(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if loaded.DefaultVideoQuality != "1080" {
+		t.Errorf("DefaultVideoQuality = %q, want %q", loaded.DefaultVideoQuality, "1080")
+	}
+
+	// empty string should survive round-trip (no default applied)
+	cfg2 := DefaultConfig()
+	cfg2.DefaultVideoQuality = ""
+	if err := cfg2.Save(tmpFile); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loaded2, err := LoadConfig(tmpFile)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if loaded2.DefaultVideoQuality != "" {
+		t.Errorf("DefaultVideoQuality = %q, want empty string", loaded2.DefaultVideoQuality)
+	}
+}

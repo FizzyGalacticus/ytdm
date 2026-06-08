@@ -307,6 +307,18 @@
                             </select>
                             <small class="text-muted">Used when channel/video doesn't specify a format</small>
                         </div>
+                        <div class="col-md-6">
+                            <label for="defaultVideoQuality" class="form-label">Default Video Quality</label>
+                            <select class="form-control" id="defaultVideoQuality">
+                                <option value="">No Global Default (per channel/video)</option>
+                                <option value="best">Best</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                            <small class="text-muted">Used when channel/video doesn't specify a quality</small>
+                        </div>
                         <div class="col-12">
                             <label class="form-label"><strong>yt-dlp Update Interval</strong></label>
                             <div class="row g-2">

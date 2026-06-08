@@ -286,6 +286,15 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}()
 
+	// Lazy-populate channel thumbnail from existing info.json files if not yet set.
+	if channel.ThumbnailURL == "" {
+		if icon := downloader.GetChannelThumbnailForChannel(channel.Name); icon != "" {
+			if err := storage.SetChannelThumbnailIfEmpty(channel.ID, icon); err != nil {
+				logScopef("channel", channel.ID, channel.Name, "Failed to set channel thumbnail: %v", err)
+			}
+		}
+	}
+
 	// Discovery window: for brand-new channels (no existing downloads) with a
 	// cutoff date, use the cutoff so the initial backlog is fetched. For active
 	// channels, use max(cutoff, retention) so the window stays bounded and we
@@ -403,6 +412,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			// Mark as downloaded
 			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title, video.PublishTime); err != nil {
 				logScopef("channel", channel.ID, channel.Name, "Failed to mark video as downloaded: %v", err)
+			}
+			if result.ChannelIcon != "" {
+				if err := storage.SetChannelThumbnailIfEmpty(channel.ID, result.ChannelIcon); err != nil {
+					logScopef("channel", channel.ID, channel.Name, "Failed to update channel thumbnail: %v", err)
+				}
 			}
 			logScopef("channel", channel.ID, channel.Name, "Downloaded video %s (%s)", video.ID, video.Title)
 			downloadCount++

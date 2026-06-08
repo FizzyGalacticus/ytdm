@@ -1087,3 +1087,95 @@ func TestRemoveVideoErrorOnNonexistent(t *testing.T) {
 	// 	t.Errorf("Expected error when removing nonexistent video, got nil")
 	// }
 }
+
+func TestSetChannelThumbnailIfEmpty(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "data.json")
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	ch := Channel{ID: "UCthumb1", Name: "Thumb Channel"}
+	if err := storage.AddChannel(ch); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	if err := storage.SetChannelThumbnailIfEmpty("UCthumb1", "https://example.com/icon.jpg"); err != nil {
+		t.Fatalf("SetChannelThumbnailIfEmpty() error = %v", err)
+	}
+	channels := storage.GetChannels()
+	if channels[0].ThumbnailURL != "https://example.com/icon.jpg" {
+		t.Errorf("ThumbnailURL = %q, want %q", channels[0].ThumbnailURL, "https://example.com/icon.jpg")
+	}
+
+	// should not overwrite existing thumbnail
+	if err := storage.SetChannelThumbnailIfEmpty("UCthumb1", "https://example.com/other.jpg"); err != nil {
+		t.Fatalf("second SetChannelThumbnailIfEmpty() error = %v", err)
+	}
+	channels = storage.GetChannels()
+	if channels[0].ThumbnailURL != "https://example.com/icon.jpg" {
+		t.Errorf("ThumbnailURL overwritten to %q, want original", channels[0].ThumbnailURL)
+	}
+
+	// no-op for unknown channel
+	if err := storage.SetChannelThumbnailIfEmpty("UCunknown", "https://example.com/nope.jpg"); err != nil {
+		t.Errorf("expected no error for unknown channel, got %v", err)
+	}
+
+	// no-op for empty url
+	if err := storage.SetChannelThumbnailIfEmpty("UCthumb1", ""); err != nil {
+		t.Errorf("expected no error for empty url, got %v", err)
+	}
+}
+
+func TestMergeChannelDownloadedVideos(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "data.json")
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	ch := Channel{
+		ID:   "UCmerge1",
+		Name: "Merge Channel",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "existing-vid", Title: "Existing Video"},
+		},
+	}
+	if err := storage.AddChannel(ch); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	incoming := []DownloadedVideo{
+		{ID: "existing-vid", Title: "Should Be Skipped"},
+		{ID: "new-vid-1", Title: "New Video 1"},
+		{ID: "new-vid-2", Title: "New Video 2"},
+	}
+	if err := storage.MergeChannelDownloadedVideos("UCmerge1", incoming); err != nil {
+		t.Fatalf("MergeChannelDownloadedVideos() error = %v", err)
+	}
+	channels := storage.GetChannels()
+	if len(channels[0].DownloadedVideos) != 3 {
+		t.Fatalf("expected 3 downloaded videos, got %d: %+v", len(channels[0].DownloadedVideos), channels[0].DownloadedVideos)
+	}
+	ids := map[string]bool{}
+	for _, dv := range channels[0].DownloadedVideos {
+		ids[dv.ID] = true
+	}
+	for _, wantID := range []string{"existing-vid", "new-vid-1", "new-vid-2"} {
+		if !ids[wantID] {
+			t.Errorf("missing expected video ID %q", wantID)
+		}
+	}
+
+	// no-op for empty slice
+	if err := storage.MergeChannelDownloadedVideos("UCmerge1", nil); err != nil {
+		t.Errorf("expected no error for empty slice, got %v", err)
+	}
+
+	// error for unknown channel
+	err = storage.MergeChannelDownloadedVideos("UCunknown", []DownloadedVideo{{ID: "x"}})
+	if err == nil {
+		t.Error("expected error for unknown channel, got nil")
+	}
+}

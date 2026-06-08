@@ -38,6 +38,34 @@ function hmsToGoDuration(h, m, s) {
 const API_BASE = '/api';
 const activeLogFilter = { scopeType: '', scopeID: '' };
 let knownLogScopes = [];
+let _currentVideoGroups = {};
+let _currentSingletonVideos = {};
+let _trackedChannelIDs = new Set();
+
+const _qualityOrder = { '360': 1, '480': 2, '720': 3, '1080': 4, '1440': 5, '2160': 6, 'best': 10 };
+
+const leastQuality = (videos) => {
+    let minOrder = Infinity;
+    let minQuality = '';
+    for (const v of videos) {
+        const q = v.video_quality || '';
+        if (!q) continue;
+        const order = _qualityOrder[q] ?? 5;
+        if (order < minOrder) {
+            minOrder = order;
+            minQuality = q;
+        }
+    }
+    return minQuality;
+};
+
+const maxRetentionDays = (videos) => {
+    let max = 0;
+    for (const v of videos) {
+        if ((v.retention_days || 0) > max) max = v.retention_days;
+    }
+    return max;
+};
 
 function hashColorFromScopeKey(scopeKey) {
     let hash = 0;
@@ -73,6 +101,80 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+const convertToChannel = async (groupKey) => {
+    const group = _currentVideoGroups[groupKey];
+    if (!group) {
+        showToast('Group data not found, please refresh', true);
+        return;
+    }
+    const quality = leastQuality(group.videos);
+    const retention = maxRetentionDays(group.videos);
+    const channelExists = _trackedChannelIDs.has(group.uploaderID);
+    const qualityDesc = quality || 'default';
+    const retentionDesc = retention ? `${retention} days` : 'default';
+    const prompt = channelExists
+        ? `Move ${group.videos.length} video(s) from "${group.name}" to its existing channel subscription?\n\nExisting video files remain on disk.`
+        : `Convert ${group.videos.length} video(s) from "${group.name}" to a channel subscription?\n\nQuality: ${qualityDesc}\nRetention: ${retentionDesc}\n\nExisting video files remain on disk.`;
+    if (!confirm(prompt)) return;
+    try {
+        const response = await fetch(`${API_BASE}/videos/convert-to-channel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                uploader_name: group.name,
+                uploader_id: group.uploaderID,
+                video_ids: group.videos.map(v => v.id),
+                video_quality: quality,
+                retention_days: retention,
+            })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(channelExists ? `Moved ${group.videos.length} video(s) to channel "${group.name}"` : `Converted "${group.name}" to a channel`);
+            loadVideos();
+            loadChannels();
+            loadStatus();
+        } else {
+            showToast(data.message || 'Failed to convert to channel', true);
+        }
+    } catch (err) {
+        console.error('convertToChannel error:', err);
+        showToast('Failed to convert to channel', true);
+    }
+};
+
+const moveToChannel = async (videoID) => {
+    const vid = _currentSingletonVideos[videoID];
+    if (!vid) {
+        showToast('Video data not found, please refresh', true);
+        return;
+    }
+    if (!confirm(`Move this video to its existing channel subscription "${vid.uploaderName}"?\n\nExisting video files remain on disk.`)) return;
+    try {
+        const response = await fetch(`${API_BASE}/videos/convert-to-channel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                uploader_name: vid.uploaderName,
+                uploader_id: vid.uploaderID,
+                video_ids: [videoID],
+            })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(`Moved video to channel "${vid.uploaderName}"`);
+            loadVideos();
+            loadChannels();
+            loadStatus();
+        } else {
+            showToast(data.message || 'Failed to move to channel', true);
+        }
+    } catch (err) {
+        console.error('moveToChannel error:', err);
+        showToast('Failed to move to channel', true);
+    }
+};
+
 // Load status
 async function loadStatus() {
     try {
@@ -103,6 +205,7 @@ async function loadChannels() {
             const channels = (data.data || []).slice().sort((a, b) =>
                 (a.name || '').localeCompare((b.name || ''), undefined, { sensitivity: 'base' })
             );
+            _trackedChannelIDs = new Set(channels.map(ch => ch.id).filter(Boolean));
             if (channels.length === 0) {
                 document.getElementById('channelsList').innerHTML = '<p class="text-muted">No channels configured</p>';
             } else {
@@ -163,6 +266,9 @@ async function loadChannels() {
                             </div>
                         `).join('');
 
+                    const thumbHtml = ch.thumbnail_url
+                        ? `<img src="${escapeHtml(ch.thumbnail_url)}" alt="" class="rounded-circle me-2 flex-shrink-0" style="width:32px;height:32px;object-fit:cover;vertical-align:middle;">`
+                        : '';
                     return `
                         <div class="channel-row">
                             <div class="channel-row-header d-flex justify-content-between align-items-start">
@@ -170,7 +276,7 @@ async function loadChannels() {
                                     <button class="btn btn-sm btn-outline-light me-2" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
                                         <i class="bi bi-chevron-expand"></i>
                                     </button>
-                                    <strong>${ch.name}</strong>
+                                    ${thumbHtml}<strong>${ch.name}</strong>
                                     <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
                                     <span class="badge bg-dark ms-2">${downloadedCount} downloaded</span>
                                     ${cutoffText}
@@ -237,6 +343,9 @@ function renderVideoRow(vid) {
             </div>
         `
         : '';
+    const moveBtn = vid.uploader_id && _trackedChannelIDs.has(vid.uploader_id)
+        ? `<button class="btn btn-sm btn-outline-success me-2" onclick="moveToChannel('${vid.id}')"><i class="bi bi-collection-play-fill"></i> Move to Channel</button>`
+        : '';
     return `
         <div class="d-flex justify-content-between align-items-start border-bottom py-3">
             <div style="flex-grow: 1;">
@@ -255,6 +364,7 @@ function renderVideoRow(vid) {
                 <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
                     <i class="bi bi-journal-text"></i> Logs
                 </button>
+                ${moveBtn}
                 <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
                     <i class="bi bi-pencil"></i> Edit
                 </button>
@@ -266,7 +376,8 @@ function renderVideoRow(vid) {
     `;
 }
 
-function renderVideoGroup(groupName, videos, collapseId) {
+const renderVideoGroup = (item, collapseId) => {
+    const { name: groupName, videos, uploaderID, groupKey } = item;
     const sorted = videos.slice().sort((a, b) => new Date(b.added_date || 0) - new Date(a.added_date || 0));
     const newestDate = sorted[0].added_date;
     const childrenHtml = sorted.map(vid => {
@@ -325,6 +436,12 @@ function renderVideoGroup(groupName, videos, collapseId) {
         `;
     }).join('');
 
+    const safeGroupKey = (groupKey || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const channelExists = uploaderID && _trackedChannelIDs.has(uploaderID);
+    const convertBtn = uploaderID
+        ? `<button class="btn btn-sm btn-outline-success ms-2" onclick="convertToChannel('${safeGroupKey}')"><i class="bi bi-collection-play-fill"></i> ${channelExists ? 'Move to Channel' : 'Convert to Channel'}</button>`
+        : '';
+
     return `
         <div class="channel-row">
             <div class="channel-row-header d-flex justify-content-between align-items-center">
@@ -335,6 +452,7 @@ function renderVideoGroup(groupName, videos, collapseId) {
                     <strong>${escapeHtml(groupName)}</strong>
                     <span class="badge bg-dark ms-2">${videos.length} videos</span>
                     <span class="badge bg-secondary ms-2">Latest added: ${formatDate(newestDate)}</span>
+                    ${convertBtn}
                 </div>
             </div>
             <div id="${collapseId}" class="collapse channel-children">
@@ -344,7 +462,7 @@ function renderVideoGroup(groupName, videos, collapseId) {
             </div>
         </div>
     `;
-}
+};
 
 // Load videos
 async function loadVideos() {
@@ -356,15 +474,15 @@ async function loadVideos() {
             if (videos.length === 0) {
                 document.getElementById('videosList').innerHTML = '<p class="text-muted">No videos configured</p>';
             } else {
-                // Group by uploader (uploader_id as fallback key); ungroupable videos stay as singletons
+                // Group by uploader_id (name as fallback); ungroupable videos stay as singletons
                 const groupMap = new Map();
                 const singletons = [];
 
                 for (const vid of videos) {
-                    const key = vid.uploader || vid.uploader_id || null;
+                    const key = vid.uploader_id || vid.uploader || null;
                     if (key) {
                         if (!groupMap.has(key)) {
-                            groupMap.set(key, { name: vid.uploader || vid.uploader_id, videos: [] });
+                            groupMap.set(key, { name: vid.uploader || vid.uploader_id, uploaderID: vid.uploader_id || '', videos: [] });
                         }
                         groupMap.get(key).videos.push(vid);
                     } else {
@@ -373,6 +491,8 @@ async function loadVideos() {
                 }
 
                 // Build top-level items: groups with 2+ videos become collapse panels; lone entries become singletons
+                _currentVideoGroups = {};
+                _currentSingletonVideos = {};
                 const items = [];
 
                 for (const group of groupMap.values()) {
@@ -381,7 +501,9 @@ async function loadVideos() {
                             const d = new Date(v.added_date || 0);
                             return d > max ? d : max;
                         }, new Date(0));
-                        items.push({ type: 'group', name: group.name, videos: group.videos, sortDate: maxDate });
+                        const groupKey = group.uploaderID || group.name;
+                        _currentVideoGroups[groupKey] = group;
+                        items.push({ type: 'group', groupKey, name: group.name, uploaderID: group.uploaderID, videos: group.videos, sortDate: maxDate });
                     } else {
                         singletons.push(group.videos[0]);
                     }
@@ -389,6 +511,9 @@ async function loadVideos() {
 
                 for (const vid of singletons) {
                     items.push({ type: 'single', vid, sortDate: new Date(vid.added_date || 0) });
+                    if (vid.uploader_id) {
+                        _currentSingletonVideos[vid.id] = { uploaderID: vid.uploader_id, uploaderName: vid.uploader || vid.uploader_id };
+                    }
                 }
 
                 // Sort newest added_date first
@@ -396,7 +521,7 @@ async function loadVideos() {
 
                 document.getElementById('videosList').innerHTML = items.map((item, idx) => {
                     if (item.type === 'group') {
-                        return renderVideoGroup(item.name, item.videos, `video-group-${idx}`);
+                        return renderVideoGroup(item, `video-group-${idx}`);
                     }
                     return renderVideoRow(item.vid);
                 }).join('');
@@ -427,6 +552,7 @@ async function loadConfig() {
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
             document.getElementById('defaultVideoFormat').value = config.default_video_format || 'mp4';
+            document.getElementById('defaultVideoQuality').value = config.default_video_quality || '';
             
             const ytDlp = config.yt_dlp || {};
             
@@ -891,6 +1017,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),
         default_video_format: document.getElementById('defaultVideoFormat').value || 'mp4',
+        default_video_quality: document.getElementById('defaultVideoQuality').value,
         yt_dlp: {
             update_interval_seconds: updateIntervalStr,
             extractor_sleep_interval_seconds: sleepIntervalStr,

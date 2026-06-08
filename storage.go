@@ -43,6 +43,7 @@ type Channel struct {
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
 	LastError        string            `json:"last_error,omitempty"` // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
+	ThumbnailURL     string            `json:"thumbnail_url,omitempty"` // Channel icon URL
 }
 
 // Video represents a specific YouTube video to monitor
@@ -688,6 +689,54 @@ func (s *Storage) ClearVideoError(id string) error {
 		}
 	}
 
+	return nil
+}
+
+// MergeChannelDownloadedVideos appends downloaded video entries into a channel's list,
+// skipping any video IDs already present.
+func (s *Storage) MergeChannelDownloadedVideos(id string, videos []DownloadedVideo) error {
+	if len(videos) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != id {
+			continue
+		}
+		existing := make(map[string]struct{}, len(s.data.Channels[i].DownloadedVideos))
+		for _, dv := range s.data.Channels[i].DownloadedVideos {
+			existing[dv.ID] = struct{}{}
+		}
+		for _, dv := range videos {
+			if _, seen := existing[dv.ID]; !seen {
+				s.data.Channels[i].DownloadedVideos = append(s.data.Channels[i].DownloadedVideos, dv)
+				existing[dv.ID] = struct{}{}
+			}
+		}
+		return s.save()
+	}
+	return fmt.Errorf("channel %s not found", id)
+}
+
+// SetChannelThumbnailIfEmpty sets the channel thumbnail URL only if it is not already populated.
+func (s *Storage) SetChannelThumbnailIfEmpty(id, url string) error {
+	if url == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID == id {
+			if s.data.Channels[i].ThumbnailURL == "" {
+				s.data.Channels[i].ThumbnailURL = url
+				return s.save()
+			}
+			return nil
+		}
+	}
 	return nil
 }
 

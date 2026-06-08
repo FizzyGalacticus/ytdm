@@ -28,9 +28,10 @@ type Config struct {
 	DownloadDir        string      `json:"download_dir"`
 	FileNamePattern    string      `json:"file_name_pattern"`
 	APIPort            int         `json:"api_port"`
-	MaxConcurrent      int         `json:"max_concurrent_downloads"`
-	DefaultVideoFormat string      `json:"default_video_format"` // mp4, webm, mkv
-	YtDlp              YtDlpConfig `json:"yt_dlp"`
+	MaxConcurrent       int         `json:"max_concurrent_downloads"`
+	DefaultVideoFormat  string      `json:"default_video_format"`  // mp4, webm, mkv
+	DefaultVideoQuality string      `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
+	YtDlp               YtDlpConfig `json:"yt_dlp"`
 }
 
 // DefaultConfig returns a Config with default values

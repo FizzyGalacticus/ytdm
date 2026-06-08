@@ -1479,3 +1479,59 @@ func TestSingleEntryNominalRetentionDoesNotRemove(t *testing.T) {
 		t.Fatalf("expected file to remain, stat err = %v", err)
 	}
 }
+
+func TestGetChannelThumbnailFromInfoJSON(t *testing.T) {
+	channelDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.DownloadDir = filepath.Dir(channelDir)
+	dl := NewDownloader(cfg)
+
+	t.Run("returns empty when no info.json files", func(t *testing.T) {
+		emptyDir := t.TempDir()
+		if got := dl.GetChannelThumbnailFromInfoJSON(emptyDir); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when directory does not exist", func(t *testing.T) {
+		if got := dl.GetChannelThumbnailFromInfoJSON("/nonexistent/path/xyz"); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("extracts channel_thumbnail from info.json", func(t *testing.T) {
+		infoJSON := `{"id":"abc123","title":"Test","channel_thumbnail":"https://yt3.ggpht.com/icon.jpg"}`
+		infoFile := filepath.Join(channelDir, "abc123.info.json")
+		if err := os.WriteFile(infoFile, []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		got := dl.GetChannelThumbnailFromInfoJSON(channelDir)
+		if got != "https://yt3.ggpht.com/icon.jpg" {
+			t.Errorf("thumbnail = %q, want %q", got, "https://yt3.ggpht.com/icon.jpg")
+		}
+	})
+
+	t.Run("skips non-info-json files", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "video.mp4"), []byte("not json"), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "video.nfo"), []byte("<nfo/>"), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		if got := dl.GetChannelThumbnailFromInfoJSON(dir); got != "" {
+			t.Errorf("expected empty string from non-info.json files, got %q", got)
+		}
+	})
+
+	t.Run("returns empty when channel_thumbnail field missing", func(t *testing.T) {
+		dir := t.TempDir()
+		infoJSON := `{"id":"def456","title":"No Thumb"}`
+		if err := os.WriteFile(filepath.Join(dir, "def456.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		if got := dl.GetChannelThumbnailFromInfoJSON(dir); got != "" {
+			t.Errorf("expected empty string when field missing, got %q", got)
+		}
+	})
+}

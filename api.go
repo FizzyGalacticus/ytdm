@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -46,6 +47,7 @@ func StartAPIServer(ctx context.Context, config *Config, storage *Storage, logs 
 	// API endpoints
 	mux.HandleFunc("/api/channels", api.handleChannels)
 	mux.HandleFunc("/api/channels/", api.handleChannelByID)
+	mux.HandleFunc("/api/videos/convert-to-channel", api.handleConvertToChannel)
 	mux.HandleFunc("/api/videos", api.handleVideos)
 	mux.HandleFunc("/api/videos/", api.handleVideoByID)
 	mux.HandleFunc("/api/config", api.handleConfig)
@@ -288,6 +290,151 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 	api.sendSuccess(w, map[string]string{"id": id})
 }
 
+// handleConvertToChannel converts a group of individual video entries into a channel subscription.
+// The individual video files remain on disk; only the storage entries are migrated.
+func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+
+	var req struct {
+		UploaderName  string   `json:"uploader_name"`
+		UploaderID    string   `json:"uploader_id"`
+		VideoIDs      []string `json:"video_ids"`
+		VideoQuality  string   `json:"video_quality"`
+		VideoFormat   string   `json:"video_format"`
+		RetentionDays int      `json:"retention_days"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	if len(req.VideoIDs) == 0 {
+		api.sendError(w, http.StatusBadRequest, "No video IDs provided")
+		return
+	}
+	if req.UploaderID == "" {
+		api.sendError(w, http.StatusBadRequest, "Uploader ID is required")
+		return
+	}
+
+	// Collect DownloadedVideos entries from the individual video records so the
+	// new channel does not re-download content that is already on disk.
+	allVideos := api.storage.GetVideos()
+	videoMap := make(map[string]Video, len(allVideos))
+	for _, v := range allVideos {
+		videoMap[v.ID] = v
+	}
+
+	var downloadedVideos []DownloadedVideo
+	for _, videoID := range req.VideoIDs {
+		if v, ok := videoMap[videoID]; ok {
+			downloadedVideos = append(downloadedVideos, v.DownloadedVideos...)
+		}
+	}
+
+	var channelURL string
+	switch {
+	case strings.HasPrefix(req.UploaderID, "UC"):
+		channelURL = "https://www.youtube.com/channel/" + req.UploaderID
+	case strings.HasPrefix(req.UploaderID, "@"):
+		channelURL = "https://www.youtube.com/" + req.UploaderID
+	default:
+		channelURL = "https://www.youtube.com/channel/" + req.UploaderID
+	}
+
+	channelName := req.UploaderName
+	if channelName == "" {
+		channelName = req.UploaderID
+	}
+
+	dl := NewDownloader(api.config)
+
+	var channelID string
+	if extractedID, err := extractChannelID(channelURL); err == nil && strings.HasPrefix(extractedID, "UC") {
+		channelID = extractedID
+	} else {
+		resolvedID, resolveErr := dl.ResolveChannelID(channelURL)
+		if resolveErr == nil && resolvedID != "" {
+			channelID = resolvedID
+		} else {
+			channelID = extractIDFromURL(channelURL)
+			if resolveErr != nil {
+				log.Printf("Warning: failed to resolve channel ID for %s, using fallback %s: %v", channelURL, channelID, resolveErr)
+			}
+		}
+	}
+
+	if channelID == "" {
+		api.sendError(w, http.StatusBadRequest, "Could not determine channel ID from uploader ID")
+		return
+	}
+
+	if api.storage.HasChannel(channelID) {
+		// Channel already exists: merge pre-tracked downloads then remove individual entries.
+		if len(downloadedVideos) > 0 {
+			if err := api.storage.MergeChannelDownloadedVideos(channelID, downloadedVideos); err != nil {
+				api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to merge channel videos: %v", err))
+				return
+			}
+		}
+		logScopef("channel", channelID, channelName, "Merged %d pre-tracked videos into existing channel during convert-to-channel", len(downloadedVideos))
+		for _, videoID := range req.VideoIDs {
+			if err := api.storage.RemoveVideo(videoID); err != nil {
+				log.Printf("Warning: failed to remove video entry %s during convert-to-channel merge: %v", videoID, err)
+			}
+		}
+		for _, ch := range api.storage.GetChannels() {
+			if ch.ID == channelID {
+				api.sendSuccess(w, ch)
+				return
+			}
+		}
+		api.sendSuccess(w, map[string]string{"id": channelID})
+		return
+	}
+
+	retentionDays := req.RetentionDays
+	if retentionDays == 0 {
+		retentionDays = api.config.RetentionDays
+	}
+	videoFormat := req.VideoFormat
+	if videoFormat == "" {
+		videoFormat = api.config.DefaultVideoFormat
+	}
+
+	channelDir := filepath.Join(api.config.DownloadDir, sanitizeFilename(channelName))
+	thumbnailURL := dl.GetChannelThumbnailFromInfoJSON(channelDir)
+
+	channel := Channel{
+		ID:               channelID,
+		URL:              channelURL,
+		Name:             channelName,
+		RetentionDays:    retentionDays,
+		VideoQuality:     req.VideoQuality,
+		VideoFormat:      videoFormat,
+		ThumbnailURL:     thumbnailURL,
+		DownloadedVideos: downloadedVideos,
+	}
+
+	if err := api.storage.AddChannel(channel); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add channel: %v", err))
+		return
+	}
+
+	logScopef("channel", channel.ID, channel.Name, "Channel created via convert-to-channel: %s (%d videos pre-tracked)", channel.Name, len(downloadedVideos))
+
+	for _, videoID := range req.VideoIDs {
+		if err := api.storage.RemoveVideo(videoID); err != nil {
+			log.Printf("Warning: failed to remove video entry %s during convert-to-channel: %v", videoID, err)
+		}
+	}
+
+	api.sendSuccess(w, channel)
+}
+
 // handleVideos handles GET and POST for videos
 func (api *APIServer) handleVideos(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -476,6 +623,7 @@ func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 		"api_port":                 api.config.APIPort,
 		"max_concurrent_downloads": api.config.MaxConcurrent,
 		"default_video_format":     api.config.DefaultVideoFormat,
+		"default_video_quality":    api.config.DefaultVideoQuality,
 		"yt_dlp": map[string]interface{}{
 			"path":                             api.config.YtDlp.Path,
 			"update_interval_seconds":          api.config.YtDlp.UpdateInterval,
@@ -519,6 +667,9 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if val, ok := updates["default_video_format"].(string); ok {
 		api.config.DefaultVideoFormat = val
+	}
+	if val, ok := updates["default_video_quality"].(string); ok {
+		api.config.DefaultVideoQuality = val
 	}
 	if ytDlpRaw, ok := updates["yt_dlp"].(map[string]interface{}); ok {
 		if val, ok := ytDlpRaw["path"].(string); ok {

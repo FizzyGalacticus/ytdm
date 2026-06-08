@@ -61,11 +61,12 @@ type Downloader struct {
 
 // DownloadResult captures the outcome of a download attempt.
 type DownloadResult struct {
-	Downloaded bool
-	Skipped    bool
-	SkipReason string
-	VideoID    string
-	VideoTitle string
+	Downloaded  bool
+	Skipped     bool
+	SkipReason  string
+	VideoID     string
+	VideoTitle  string
+	ChannelIcon string // channel_thumbnail URL from info.json, if available
 }
 
 // NewDownloader creates a new Downloader instance
@@ -707,8 +708,11 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	if result.VideoID != "" {
 		if metadata, metaErr := d.loadMetadataFromInfoJSON(channelDir, result.VideoID); metaErr != nil {
 			log.Printf("Warning: failed to load info json for NFO (%s): %v", result.VideoID, metaErr)
-		} else if err := d.generateNFOFile(channelDir, metadata); err != nil {
-			log.Printf("Warning: failed to generate NFO file: %v", err)
+		} else {
+			result.ChannelIcon = metadata.ChannelIcon
+			if err := d.generateNFOFile(channelDir, metadata); err != nil {
+				log.Printf("Warning: failed to generate NFO file: %v", err)
+			}
 		}
 	}
 
@@ -796,6 +800,39 @@ func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*Vide
 	}
 
 	return metadata, nil
+}
+
+// GetChannelThumbnailFromInfoJSON scans a channel directory for info.json files and returns
+// the first channel_thumbnail URL found.
+func (d *Downloader) GetChannelThumbnailFromInfoJSON(channelDir string) string {
+	entries, err := os.ReadDir(channelDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".info.json") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(channelDir, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var raw map[string]interface{}
+		if json.Unmarshal(data, &raw) != nil {
+			continue
+		}
+		if icon := getStringField(raw, "channel_thumbnail"); icon != "" {
+			return icon
+		}
+	}
+	return ""
+}
+
+// GetChannelThumbnailForChannel resolves the channel directory from the channel name and
+// delegates to GetChannelThumbnailFromInfoJSON.
+func (d *Downloader) GetChannelThumbnailForChannel(channelName string) string {
+	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channelName))
+	return d.GetChannelThumbnailFromInfoJSON(channelDir)
 }
 
 func (d *Downloader) countVideoFiles(channelDir, videoID string) int {
