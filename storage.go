@@ -18,6 +18,16 @@ type PrunedVideo struct {
 	PublishDate time.Time `json:"publish_date"`
 }
 
+// FeedVideo records a video seen in the channel's RSS feed that falls within the
+// retention window but has not yet been downloaded.
+type FeedVideo struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	URL         string    `json:"url"`
+	PublishedAt time.Time `json:"published_at"`
+	AddedAt     time.Time `json:"added_at"`
+}
+
 // DownloadedVideo tracks a downloaded video with its download date
 type DownloadedVideo struct {
 	ID             string    `json:"id"`
@@ -39,11 +49,13 @@ type Channel struct {
 	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
 	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
 	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
-	PrunedVideos     []PrunedVideo     `json:"pruned_videos"`        // Videos already downloaded then pruned; prevents re-download loops
-	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`    // Track which videos have been downloaded with dates
-	LastError        string            `json:"last_error,omitempty"` // Most recent error message
+	PrunedVideos     []PrunedVideo     `json:"pruned_videos"`             // Videos already downloaded then pruned; prevents re-download loops
+	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`         // Track which videos have been downloaded with dates
+	FeedVideos       []FeedVideo       `json:"feed_videos,omitempty"`     // Videos seen in feed but not yet downloaded
+	SkipAutoDownload bool              `json:"skip_auto_download"`        // When true, track feed videos but do not download automatically
+	LastError        string            `json:"last_error,omitempty"`      // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
-	ThumbnailURL     string            `json:"thumbnail_url,omitempty"` // Channel icon URL
+	ThumbnailURL     string            `json:"thumbnail_url,omitempty"`   // Channel icon URL
 }
 
 // Video represents a specific YouTube video to monitor
@@ -184,7 +196,7 @@ func (s *Storage) UpdateChannelLastChecked(id string, t time.Time) error {
 }
 
 // UpdateChannel updates retention days, pruning behavior, cutoff date, video quality, video format, and shorts preference for a channel
-func (s *Storage) UpdateChannel(id string, retentionDays int, disablePruning bool, cutoffDate time.Time, videoQuality, videoFormat string, downloadShorts bool) error {
+func (s *Storage) UpdateChannel(id string, retentionDays int, disablePruning bool, cutoffDate time.Time, videoQuality, videoFormat string, downloadShorts, skipAutoDownload bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -196,10 +208,74 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, disablePruning boo
 			s.data.Channels[i].VideoQuality = videoQuality
 			s.data.Channels[i].VideoFormat = videoFormat
 			s.data.Channels[i].DownloadShorts = downloadShorts
+			s.data.Channels[i].SkipAutoDownload = skipAutoDownload
 			return s.save()
 		}
 	}
 
+	return nil
+}
+
+// UpsertFeedVideo adds or updates a video in the channel's FeedVideos list.
+func (s *Storage) UpsertFeedVideo(channelID string, video FeedVideo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		for j, fv := range s.data.Channels[i].FeedVideos {
+			if fv.ID == video.ID {
+				s.data.Channels[i].FeedVideos[j] = video
+				return s.save()
+			}
+		}
+		s.data.Channels[i].FeedVideos = append(s.data.Channels[i].FeedVideos, video)
+		return s.save()
+	}
+	return nil
+}
+
+// RemoveFeedVideo removes a video from the channel's FeedVideos list.
+func (s *Storage) RemoveFeedVideo(channelID, videoID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		fvs := s.data.Channels[i].FeedVideos
+		for j, fv := range fvs {
+			if fv.ID == videoID {
+				s.data.Channels[i].FeedVideos = append(fvs[:j], fvs[j+1:]...)
+				return s.save()
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+// PruneFeedVideos removes feed video entries published before the given cutoff time.
+func (s *Storage) PruneFeedVideos(channelID string, cutoff time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		var keep []FeedVideo
+		for _, fv := range s.data.Channels[i].FeedVideos {
+			if !fv.PublishedAt.Before(cutoff) {
+				keep = append(keep, fv)
+			}
+		}
+		if len(keep) == len(s.data.Channels[i].FeedVideos) {
+			return nil
+		}
+		s.data.Channels[i].FeedVideos = keep
+		return s.save()
+	}
 	return nil
 }
 

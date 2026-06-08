@@ -314,6 +314,9 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		if err := storage.TrimPrunedVideos(channel.ID, since); err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Failed to trim pruned video list: %v", err)
 		}
+		if err := storage.PruneFeedVideos(channel.ID, since); err != nil {
+			logScopef("channel", channel.ID, channel.Name, "Failed to prune feed videos: %v", err)
+		}
 	}
 
 	// Always try fast index (RSS) first, then fall back to yt-dlp
@@ -376,8 +379,30 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		videosToDownload = fresh
 	}
 
+	// Track all newly-discovered videos in FeedVideos so they are visible in the
+	// UI regardless of whether auto-download is enabled.
+	for _, video := range videosToDownload {
+		fv := FeedVideo{
+			ID:          video.ID,
+			Title:       video.Title,
+			URL:         normalizeChannelVideoURL(video.ID),
+			PublishedAt: video.PublishTime,
+			AddedAt:     time.Now(),
+		}
+		if err := storage.UpsertFeedVideo(channel.ID, fv); err != nil {
+			logScopef("channel", channel.ID, channel.Name, "Failed to track feed video %s: %v", video.ID, err)
+		}
+	}
+
 	// If no videos need downloading, return early without creating directory
 	if len(videosToDownload) == 0 {
+		return nil
+	}
+
+	// If auto-download is disabled, videos have been tracked in FeedVideos but
+	// will not be downloaded automatically; they can be downloaded manually via the UI.
+	if channel.SkipAutoDownload {
+		logScopef("channel", channel.ID, channel.Name, "Auto-download disabled: %d video(s) tracked in feed, skipping download", len(videosToDownload))
 		return nil
 	}
 
@@ -412,6 +437,9 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			// Mark as downloaded
 			if err := storage.MarkVideoAsDownloaded(channel.ID, video.ID, video.Title, video.PublishTime); err != nil {
 				logScopef("channel", channel.ID, channel.Name, "Failed to mark video as downloaded: %v", err)
+			}
+			if err := storage.RemoveFeedVideo(channel.ID, video.ID); err != nil {
+				logScopef("channel", channel.ID, channel.Name, "Failed to remove feed video after download: %v", err)
 			}
 			if result.ChannelIcon != "" {
 				if err := storage.SetChannelThumbnailIfEmpty(channel.ID, result.ChannelIcon); err != nil {

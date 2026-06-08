@@ -524,7 +524,7 @@ func TestStorageUpdateChannel(t *testing.T) {
 	newFormat := "webm"
 	newShorts := true
 
-	err = storage.UpdateChannel(channel.ID, newRetention, newDisablePruning, newCutoff, newQuality, newFormat, newShorts)
+	err = storage.UpdateChannel(channel.ID, newRetention, newDisablePruning, newCutoff, newQuality, newFormat, newShorts, false)
 	if err != nil {
 		t.Errorf("Failed to update channel: %v", err)
 	}

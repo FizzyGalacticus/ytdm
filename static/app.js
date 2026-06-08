@@ -143,6 +143,23 @@ const convertToChannel = async (groupKey) => {
     }
 };
 
+const downloadFeedVideo = async (channelID, videoID) => {
+    try {
+        const response = await fetch(`${API_BASE}/channels/${channelID}/feed-videos/${videoID}/download`, {
+            method: 'POST',
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('Download started — refresh in a moment to see progress');
+        } else {
+            showToast(data.message || 'Failed to start download', true);
+        }
+    } catch (err) {
+        console.error('downloadFeedVideo error:', err);
+        showToast('Failed to start download', true);
+    }
+};
+
 const moveToChannel = async (videoID) => {
     const vid = _currentSingletonVideos[videoID];
     if (!vid) {
@@ -220,6 +237,10 @@ async function loadChannels() {
                         ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
                         : '';
                     const downloadedCount = (ch.downloaded_videos || []).length;
+                    const feedVideos = (ch.feed_videos || []).slice().sort((a, b) =>
+                        new Date(b.published_at || 0) - new Date(a.published_at || 0)
+                    );
+                    const pendingCount = feedVideos.length;
                     const collapseId = `channel-collapse-${idx}`;
                     const pruningText = ch.disable_pruning
                         ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
@@ -247,7 +268,30 @@ async function loadChannels() {
                     const downloadedVideos = (ch.downloaded_videos || []).slice().sort((a, b) =>
                         new Date(b.download_date || 0) - new Date(a.download_date || 0)
                     );
-                    const childrenHtml = downloadedVideos.length === 0
+
+                    const feedVideosHtml = feedVideos.length === 0 ? '' : `
+                        <div class="mt-2 mb-3">
+                            <div class="small text-warning fw-bold mb-1"><i class="bi bi-hourglass-split me-1"></i>Pending Download (${feedVideos.length})</div>
+                            ${feedVideos.map(fv => `
+                                <div class="d-flex justify-content-between align-items-center border-bottom border-secondary py-2">
+                                    <div style="flex-grow: 1;">
+                                        <strong>${escapeHtml(fv.title || fv.id)}</strong>
+                                        <div class="small text-muted">Published: ${formatDate(fv.published_at)}</div>
+                                    </div>
+                                    <div class="ms-2">
+                                        <a href="https://www.youtube.com/watch?v=${fv.id}" target="_blank" class="btn btn-outline-primary btn-sm me-1" title="Watch on YouTube">
+                                            <i class="bi bi-youtube"></i>
+                                        </a>
+                                        <button class="btn btn-success btn-sm" onclick="downloadFeedVideo('${ch.id}', '${fv.id}')" title="Download this video now">
+                                            <i class="bi bi-download"></i> Download
+                                        </button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+
+                    const childrenHtml = feedVideosHtml + (downloadedVideos.length === 0
                         ? '<div class="text-muted small py-2">No downloaded videos tracked for this channel yet</div>'
                         : downloadedVideos.map((video) => `
                             <div class="d-flex justify-content-between align-items-center border-bottom py-2">
@@ -259,12 +303,12 @@ async function loadChannels() {
                                     <a href="https://www.youtube.com/watch?v=${video.id}" target="_blank" class="btn btn-outline-primary btn-sm me-1">
                                         <i class="bi bi-youtube"></i>
                                     </a>
-                                    <button class="btn btn-sm ${video.disable_pruning ? 'btn-outline-warning' : 'btn-outline-secondary'}" onclick="setChannelVideoPruning('${ch.id}', '${video.id}', ${!video.disable_pruning})">
+                                    <button class="btn btn-sm ${video.disable_pruning ? 'btn-outline-warning' : 'btn-outline-secondary'}" onclick="setChannelVideoPruning('${ch.id}', '${video.id}', ${!video.disable_pruning})" title="${video.disable_pruning ? 'Click to re-enable pruning' : 'Click to keep this video indefinitely'}">
                                         <i class="bi ${video.disable_pruning ? 'bi-unlock' : 'bi-lock'}"></i>
                                     </button>
                                 </div>
                             </div>
-                        `).join('');
+                        `).join(''));
 
                     const thumbHtml = ch.thumbnail_url
                         ? `<img src="${escapeHtml(ch.thumbnail_url)}" alt="" class="rounded-circle me-2 flex-shrink-0" style="width:32px;height:32px;object-fit:cover;vertical-align:middle;">`
@@ -279,6 +323,8 @@ async function loadChannels() {
                                     ${thumbHtml}<strong>${ch.name}</strong>
                                     <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
                                     <span class="badge bg-dark ms-2">${downloadedCount} downloaded</span>
+                                    ${pendingCount > 0 ? `<span class="badge bg-warning text-dark ms-2" title="${pendingCount} video(s) tracked but not yet downloaded"><i class="bi bi-hourglass-split me-1"></i>${pendingCount} pending</span>` : ''}
+                                    ${ch.skip_auto_download ? '<span class="badge bg-secondary ms-2" title="New videos are tracked but not downloaded automatically">Manual</span>' : ''}
                                     ${cutoffText}
                                     ${qualityText}
                                     ${formatText}
@@ -293,7 +339,7 @@ async function loadChannels() {
                                     <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${ch.name.replace(/'/g, "\\'")}')">
                                         <i class="bi bi-journal-text"></i> Logs
                                     </button>
-                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts})">
+                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts}, ${ch.skip_auto_download})">
                                         <i class="bi bi-pencil"></i> Edit
                                     </button>
                                     <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
@@ -745,6 +791,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const format = document.getElementById('channelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('channelDownloadShorts').checked;
     const disablePruning = document.getElementById('channelDisablePruning').checked;
+    const skipAutoDownload = !document.getElementById('channelAutoDownload').checked;
 
     const channelData = {
         name,
@@ -753,7 +800,8 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         disable_pruning: disablePruning,
         video_quality: quality,
         video_format: format,
-        download_shorts: downloadShorts
+        download_shorts: downloadShorts,
+        skip_auto_download: skipAutoDownload,
     };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
@@ -819,12 +867,12 @@ async function setChannelVideoPruning(channelId, videoId, disablePruning) {
 }
 
 // Open edit channel modal
-function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts) {
+function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts, skipAutoDownload) {
     document.getElementById('editChannelId').value = id;
     document.getElementById('editChannelName').value = name;
     document.getElementById('editChannelRetention').value = retentionDays || '';
     document.getElementById('editChannelDisablePruning').checked = !!disablePruning;
-    
+
     // Convert ISO date to YYYY-MM-DD format for date input
     if (cutoffDate && cutoffDate !== '0001-01-01T00:00:00Z') {
         const date = new Date(cutoffDate);
@@ -832,11 +880,12 @@ function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDat
     } else {
         document.getElementById('editChannelCutoffDate').value = '';
     }
-    
+
     document.getElementById('editChannelQuality').value = videoQuality || '';
     document.getElementById('editChannelFormat').value = videoFormat || '';
     document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
-    
+    document.getElementById('editChannelAutoDownload').checked = !skipAutoDownload;
+
     const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
     modal.show();
 }
@@ -850,13 +899,15 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
     const videoQuality = document.getElementById('editChannelQuality').value;
     const videoFormat = document.getElementById('editChannelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
+    const skipAutoDownload = !document.getElementById('editChannelAutoDownload').checked;
 
     const updateData = {
         retention_days: retentionDays,
         disable_pruning: disablePruning,
         video_quality: videoQuality,
         video_format: videoFormat,
-        download_shorts: downloadShorts
+        download_shorts: downloadShorts,
+        skip_auto_download: skipAutoDownload,
     };
 
     // Only include cutoff date if it's set

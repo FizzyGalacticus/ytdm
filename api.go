@@ -209,6 +209,17 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Handle manual feed-video download: POST /api/channels/{id}/feed-videos/{videoId}/download
+	if len(parts) >= 7 && parts[4] == "feed-videos" && parts[6] == "download" {
+		videoID := parts[5]
+		if r.Method == http.MethodPost {
+			api.handleManualFeedVideoDownload(w, r, id, videoID)
+		} else {
+			api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+		return
+	}
+
 	switch r.Method {
 	case http.MethodDelete:
 		var target *Channel
@@ -265,15 +276,16 @@ func (api *APIServer) updateChannelDownloadedVideo(w http.ResponseWriter, r *htt
 	})
 }
 
-// updateChannel updates channel settings (retention days, pruning, cutoff date, video quality, video format, shorts preference)
+// updateChannel updates channel settings (retention days, pruning, cutoff date, video quality, video format, shorts preference, auto-download)
 func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id string) {
 	var updateData struct {
-		RetentionDays  int       `json:"retention_days"`
-		DisablePruning bool      `json:"disable_pruning"`
-		CutoffDate     time.Time `json:"cutoff_date"`
-		VideoQuality   string    `json:"video_quality"`
-		VideoFormat    string    `json:"video_format"`
-		DownloadShorts bool      `json:"download_shorts"`
+		RetentionDays    int       `json:"retention_days"`
+		DisablePruning   bool      `json:"disable_pruning"`
+		CutoffDate       time.Time `json:"cutoff_date"`
+		VideoQuality     string    `json:"video_quality"`
+		VideoFormat      string    `json:"video_format"`
+		DownloadShorts   bool      `json:"download_shorts"`
+		SkipAutoDownload bool      `json:"skip_auto_download"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -281,13 +293,76 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		return
 	}
 
-	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.DisablePruning, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts); err != nil {
+	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.DisablePruning, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts, updateData.SkipAutoDownload); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel: %v", err))
 		return
 	}
 
 	logScopef("channel", id, id, "Channel updated via API: %s", id)
 	api.sendSuccess(w, map[string]string{"id": id})
+}
+
+// handleManualFeedVideoDownload triggers a manual download for a specific feed video.
+// The download runs asynchronously; a 200 response means the job was queued.
+func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
+	var targetChannel *Channel
+	for _, ch := range api.storage.GetChannels() {
+		if ch.ID == channelID {
+			c := ch
+			targetChannel = &c
+			break
+		}
+	}
+	if targetChannel == nil {
+		api.sendError(w, http.StatusNotFound, "Channel not found")
+		return
+	}
+
+	var feedVideo *FeedVideo
+	for _, fv := range targetChannel.FeedVideos {
+		if fv.ID == videoID {
+			v := fv
+			feedVideo = &v
+			break
+		}
+	}
+	if feedVideo == nil {
+		api.sendError(w, http.StatusNotFound, "Feed video not found or already downloaded")
+		return
+	}
+
+	ch := *targetChannel
+	fv := *feedVideo
+	go func() {
+		dl := NewDownloader(api.config)
+		result, err := dl.DownloadVideo(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, ch.DownloadShorts)
+		if err != nil {
+			logScopef("channel", ch.ID, ch.Name, "Manual download failed for video %s: %v", fv.ID, err)
+			if setErr := api.storage.SetChannelError(ch.ID, fmt.Sprintf("Manual download of %q failed: %v", fv.Title, err)); setErr != nil {
+				log.Printf("Failed to set channel error after manual download failure: %v", setErr)
+			}
+			return
+		}
+		if result != nil && result.Skipped {
+			logScopef("channel", ch.ID, ch.Name, "Manual download skipped for video %s: %s", fv.ID, result.SkipReason)
+			return
+		}
+		if err := api.storage.MarkVideoAsDownloaded(ch.ID, fv.ID, fv.Title, fv.PublishedAt); err != nil {
+			logScopef("channel", ch.ID, ch.Name, "Failed to mark manually downloaded video %s: %v", fv.ID, err)
+		}
+		if err := api.storage.RemoveFeedVideo(ch.ID, fv.ID); err != nil {
+			logScopef("channel", ch.ID, ch.Name, "Failed to remove feed video %s after manual download: %v", fv.ID, err)
+		}
+		if result != nil && result.ChannelIcon != "" {
+			if err := api.storage.SetChannelThumbnailIfEmpty(ch.ID, result.ChannelIcon); err != nil {
+				logScopef("channel", ch.ID, ch.Name, "Failed to update thumbnail after manual download: %v", err)
+			}
+		}
+		logScopef("channel", ch.ID, ch.Name, "Manual download completed for video %s (%s)", fv.ID, fv.Title)
+	}()
+
+	logScopef("channel", ch.ID, ch.Name, "Manual download queued for video %s (%s)", fv.ID, fv.Title)
+	api.sendSuccess(w, map[string]string{"video_id": fv.ID, "message": "Download started"})
 }
 
 // handleConvertToChannel converts a group of individual video entries into a channel subscription.
