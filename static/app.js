@@ -131,8 +131,7 @@ const convertToChannel = async (groupKey) => {
         const data = await response.json();
         if (data.success) {
             showToast(channelExists ? `Moved ${group.videos.length} video(s) to channel "${group.name}"` : `Converted "${group.name}" to a channel`);
-            loadVideos();
-            loadChannels();
+            loadChannels().then(loadVideos);
             loadStatus();
         } else {
             showToast(data.message || 'Failed to convert to channel', true);
@@ -166,7 +165,11 @@ const moveToChannel = async (videoID) => {
         showToast('Video data not found, please refresh', true);
         return;
     }
-    if (!confirm(`Move this video to its existing channel subscription "${vid.uploaderName}"?\n\nExisting video files remain on disk.`)) return;
+    const channelExists = _trackedChannelIDs.has(vid.uploaderID);
+    const confirmMsg = channelExists
+        ? `Move this video to its existing channel subscription "${vid.uploaderName}"?\n\nExisting video files remain on disk.`
+        : `Create a channel subscription for "${vid.uploaderName}" from this video?\n\nQuality: ${vid.videoQuality || 'default'}\nRetention: ${vid.retentionDays ? `${vid.retentionDays} days` : 'default'}\n\nExisting video files remain on disk.`;
+    if (!confirm(confirmMsg)) return;
     try {
         const response = await fetch(`${API_BASE}/videos/convert-to-channel`, {
             method: 'POST',
@@ -175,13 +178,14 @@ const moveToChannel = async (videoID) => {
                 uploader_name: vid.uploaderName,
                 uploader_id: vid.uploaderID,
                 video_ids: [videoID],
+                video_quality: vid.videoQuality,
+                retention_days: vid.retentionDays,
             })
         });
         const data = await response.json();
         if (data.success) {
-            showToast(`Moved video to channel "${vid.uploaderName}"`);
-            loadVideos();
-            loadChannels();
+            showToast(channelExists ? `Moved video to channel "${vid.uploaderName}"` : `Created channel "${vid.uploaderName}"`);
+            loadChannels().then(loadVideos);
             loadStatus();
         } else {
             showToast(data.message || 'Failed to move to channel', true);
@@ -389,8 +393,13 @@ function renderVideoRow(vid) {
             </div>
         `
         : '';
-    const moveBtn = vid.uploader_id && _trackedChannelIDs.has(vid.uploader_id)
-        ? `<button class="btn btn-sm btn-outline-success me-2" onclick="moveToChannel('${vid.id}')"><i class="bi bi-collection-play-fill"></i> Move to Channel</button>`
+    const channelTracked = vid.uploader_id && _trackedChannelIDs.has(vid.uploader_id);
+    const moveBtn = vid.uploader_id
+        ? `<button class="btn btn-sm ${channelTracked ? 'btn-outline-success' : 'btn-outline-info'} me-2"
+                onclick="moveToChannel('${vid.id}')"
+                title="${channelTracked ? 'Move this video under its existing channel subscription' : 'Create a channel subscription for this uploader'}">
+                <i class="bi bi-collection-play-fill"></i> ${channelTracked ? 'Move to Channel' : 'Convert to Channel'}
+            </button>`
         : '';
     return `
         <div class="d-flex justify-content-between align-items-start border-bottom py-3">
@@ -558,7 +567,12 @@ async function loadVideos() {
                 for (const vid of singletons) {
                     items.push({ type: 'single', vid, sortDate: new Date(vid.added_date || 0) });
                     if (vid.uploader_id) {
-                        _currentSingletonVideos[vid.id] = { uploaderID: vid.uploader_id, uploaderName: vid.uploader || vid.uploader_id };
+                        _currentSingletonVideos[vid.id] = {
+                            uploaderID: vid.uploader_id,
+                            uploaderName: vid.uploader || vid.uploader_id,
+                            videoQuality: vid.video_quality || '',
+                            retentionDays: vid.retention_days || 0,
+                        };
                     }
                 }
 
@@ -1119,17 +1133,16 @@ document.getElementById('clearLogFilterBtn').addEventListener('click', () => {
     loadLogs();
 });
 
-// Initial load
+// Initial load — channels must complete first so _trackedChannelIDs is populated
+// before videos are rendered (prevents missing Move/Convert buttons on first paint).
 loadStatus();
-loadChannels();
-loadVideos();
+loadChannels().then(loadVideos);
 loadConfig();
 loadLogs();
 
 // Refresh data every 30 seconds
 setInterval(() => {
     loadStatus();
-    loadChannels();
-    loadVideos();
+    loadChannels().then(loadVideos);
     loadLogs();
 }, 30000);

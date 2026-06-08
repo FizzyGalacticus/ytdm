@@ -492,6 +492,7 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 		VideoFormat:      videoFormat,
 		ThumbnailURL:     thumbnailURL,
 		DownloadedVideos: downloadedVideos,
+		CutoffDate:       time.Now(),
 	}
 
 	if err := api.storage.AddChannel(channel); err != nil {
