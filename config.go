@@ -22,15 +22,16 @@ type YtDlpConfig struct {
 // Config holds the application configuration
 type Config struct {
 	sync.RWMutex
-	CheckInterval      string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
-	RetentionDays      int         `json:"retention_days"`
-	DisablePruning     bool        `json:"disable_pruning"`
-	DownloadDir        string      `json:"download_dir"`
-	FileNamePattern    string      `json:"file_name_pattern"`
-	APIPort            int         `json:"api_port"`
+	CheckInterval       string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
+	RetentionDays       int         `json:"retention_days"`
+	DisablePruning      bool        `json:"disable_pruning"`
+	DownloadDir         string      `json:"download_dir"`
+	FileNamePattern     string      `json:"file_name_pattern"`
+	APIPort             int         `json:"api_port"`
 	MaxConcurrent       int         `json:"max_concurrent_downloads"`
 	DefaultVideoFormat  string      `json:"default_video_format"`  // mp4, webm, mkv
 	DefaultVideoQuality string      `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
+	MaxLogEntries       int         `json:"max_log_entries"`       // per-scope log ring buffer size
 	YtDlp               YtDlpConfig `json:"yt_dlp"`
 }
 
@@ -45,6 +46,7 @@ func DefaultConfig() *Config {
 		APIPort:            8080,
 		MaxConcurrent:      3,
 		DefaultVideoFormat: "mp4",
+		MaxLogEntries:      100,
 		YtDlp: YtDlpConfig{
 			Path:                    "yt-dlp",
 			UpdateInterval:          "24h0m0s",
@@ -123,6 +125,9 @@ func applyConfigDefaults(c *Config) {
 	}
 	if c.DefaultVideoFormat == "" {
 		c.DefaultVideoFormat = "mp4"
+	}
+	if c.MaxLogEntries <= 0 {
+		c.MaxLogEntries = 100
 	}
 }
 

@@ -123,3 +123,4 @@ Before finishing a change:
 2. Relevant targeted tests for touched area pass.
 3. API contract changes are reflected in tests and UI usage if applicable.
 4. Retention/pruning rules are still consistent across channel and single-video flows.
+5. Run `go fmt ./...` to ensure consistent formatting across all go files

@@ -611,6 +611,7 @@ async function loadConfig() {
             document.getElementById('downloadDir').value = config.download_dir;
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
+            document.getElementById('maxLogEntries').value = config.max_log_entries || 100;
             document.getElementById('defaultVideoFormat').value = config.default_video_format || 'mp4';
             document.getElementById('defaultVideoQuality').value = config.default_video_quality || '';
             
@@ -1081,6 +1082,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
         download_dir: document.getElementById('downloadDir').value,
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),
+        max_log_entries: parseInt(document.getElementById('maxLogEntries').value) || 100,
         default_video_format: document.getElementById('defaultVideoFormat').value || 'mp4',
         default_video_quality: document.getElementById('defaultVideoQuality').value,
         yt_dlp: {

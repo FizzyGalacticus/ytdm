@@ -15,15 +15,30 @@ func TestLogBufferParsesScopedEntries(t *testing.T) {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 
-	if entries[0].ScopeType != "channel" || entries[0].ScopeID != "UCabc" || entries[0].ScopeName != "My Channel" {
-		t.Fatalf("unexpected scope metadata: %+v", entries[0])
-	}
-	if entries[0].Line == "" || entries[0].Line == "[scope:channel:UCabc:My Channel]" {
-		t.Fatalf("expected stripped line content, got %q", entries[0].Line)
+	var scoped, unscoped *LogEntry
+	for i := range entries {
+		if entries[i].ScopeType != "" {
+			scoped = &entries[i]
+		} else {
+			unscoped = &entries[i]
+		}
 	}
 
-	if entries[1].ScopeType != "" || entries[1].ScopeID != "" {
-		t.Fatalf("expected unscoped entry, got %+v", entries[1])
+	if scoped == nil {
+		t.Fatal("expected a scoped entry, found none")
+	}
+	if scoped.ScopeType != "channel" || scoped.ScopeID != "UCabc" || scoped.ScopeName != "My Channel" {
+		t.Fatalf("unexpected scope metadata: %+v", *scoped)
+	}
+	if scoped.Line == "" || scoped.Line == "[scope:channel:UCabc:My Channel]" {
+		t.Fatalf("expected stripped line content, got %q", scoped.Line)
+	}
+
+	if unscoped == nil {
+		t.Fatal("expected an unscoped entry, found none")
+	}
+	if unscoped.ScopeType != "" || unscoped.ScopeID != "" {
+		t.Fatalf("expected unscoped entry, got %+v", *unscoped)
 	}
 }
 

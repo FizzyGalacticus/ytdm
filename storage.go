@@ -45,17 +45,17 @@ type Channel struct {
 	LastChecked      time.Time         `json:"last_checked"`
 	RetentionDays    int               `json:"retention_days"`
 	DisablePruning   bool              `json:"disable_pruning"`
-	CutoffDate       time.Time         `json:"cutoff_date"`          // Don't download videos published before this date
-	VideoQuality     string            `json:"video_quality"`        // Video quality preference (e.g., "best", "720", "480", "360")
-	VideoFormat      string            `json:"video_format"`         // Video format preference (e.g., "mp4", "webm", "mkv")
-	DownloadShorts   bool              `json:"download_shorts"`      // Whether to download short-format videos
-	PrunedVideos     []PrunedVideo     `json:"pruned_videos"`             // Videos already downloaded then pruned; prevents re-download loops
-	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`         // Track which videos have been downloaded with dates
-	FeedVideos       []FeedVideo       `json:"feed_videos,omitempty"`     // Videos seen in feed but not yet downloaded
-	SkipAutoDownload bool              `json:"skip_auto_download"`        // When true, track feed videos but do not download automatically
-	LastError        string            `json:"last_error,omitempty"`      // Most recent error message
+	CutoffDate       time.Time         `json:"cutoff_date"`           // Don't download videos published before this date
+	VideoQuality     string            `json:"video_quality"`         // Video quality preference (e.g., "best", "720", "480", "360")
+	VideoFormat      string            `json:"video_format"`          // Video format preference (e.g., "mp4", "webm", "mkv")
+	DownloadShorts   bool              `json:"download_shorts"`       // Whether to download short-format videos
+	PrunedVideos     []PrunedVideo     `json:"pruned_videos"`         // Videos already downloaded then pruned; prevents re-download loops
+	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`     // Track which videos have been downloaded with dates
+	FeedVideos       []FeedVideo       `json:"feed_videos,omitempty"` // Videos seen in feed but not yet downloaded
+	SkipAutoDownload bool              `json:"skip_auto_download"`    // When true, track feed videos but do not download automatically
+	LastError        string            `json:"last_error,omitempty"`  // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
-	ThumbnailURL     string            `json:"thumbnail_url,omitempty"`   // Channel icon URL
+	ThumbnailURL     string            `json:"thumbnail_url,omitempty"` // Channel icon URL
 }
 
 // Video represents a specific YouTube video to monitor

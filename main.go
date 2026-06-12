@@ -27,6 +27,7 @@ func main() {
 			log.Printf("Failed to save default config: %v", err)
 		}
 	}
+	logBuffer.SetMaxEntries(config.MaxLogEntries)
 	log.Printf("Configuration loaded: %+v", config)
 
 	// Initialize storage

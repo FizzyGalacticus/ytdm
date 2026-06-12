@@ -115,10 +115,10 @@ func TestConvertToChannelCreatesNew(t *testing.T) {
 	api := &APIServer{config: cfg, storage: storage}
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"uploader_name": "Test Creator",
-		"uploader_id":   "UCtest123",
-		"video_ids":     []string{"vid-1", "vid-2"},
-		"video_quality": "720",
+		"uploader_name":  "Test Creator",
+		"uploader_id":    "UCtest123",
+		"video_ids":      []string{"vid-1", "vid-2"},
+		"video_quality":  "720",
 		"retention_days": 14,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/api/videos/convert-to-channel", bytes.NewReader(body))

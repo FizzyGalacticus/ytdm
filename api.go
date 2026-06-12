@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -108,7 +109,29 @@ func (api *APIServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		for _, entry := range structuredEntries {
 			entries = append(entries, entry.Line)
 		}
-		scopes = api.logs.GetScopes()
+
+		// Start with scopes that have log entries, then fill in any remaining channels.
+		logScopes := api.logs.GetScopes()
+		seen := make(map[string]bool, len(logScopes))
+		for _, s := range logScopes {
+			seen[s.Type+":"+s.ID] = true
+		}
+		scopes = logScopes
+		for _, ch := range api.storage.GetChannels() {
+			if !seen["channel:"+ch.ID] {
+				scopes = append(scopes, LogScope{Type: "channel", ID: ch.ID, Name: ch.Name})
+			}
+		}
+		sort.Slice(scopes, func(i, j int) bool {
+			ni, nj := scopes[i].Name, scopes[j].Name
+			if ni == "" {
+				ni = scopes[i].ID
+			}
+			if nj == "" {
+				nj = scopes[j].ID
+			}
+			return strings.ToLower(ni) < strings.ToLower(nj)
+		})
 	}
 
 	api.sendSuccess(w, map[string]interface{}{
@@ -700,6 +723,7 @@ func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 		"max_concurrent_downloads": api.config.MaxConcurrent,
 		"default_video_format":     api.config.DefaultVideoFormat,
 		"default_video_quality":    api.config.DefaultVideoQuality,
+		"max_log_entries":          api.config.MaxLogEntries,
 		"yt_dlp": map[string]interface{}{
 			"path":                             api.config.YtDlp.Path,
 			"update_interval_seconds":          api.config.YtDlp.UpdateInterval,
@@ -747,6 +771,9 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	if val, ok := updates["default_video_quality"].(string); ok {
 		api.config.DefaultVideoQuality = val
 	}
+	if val, ok := updates["max_log_entries"].(float64); ok {
+		api.config.MaxLogEntries = int(val)
+	}
 	if ytDlpRaw, ok := updates["yt_dlp"].(map[string]interface{}); ok {
 		if val, ok := ytDlpRaw["path"].(string); ok {
 			api.config.YtDlp.Path = val
@@ -783,6 +810,10 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	// Reload config from disk to ensure consistency
 	if err := api.config.ReloadFromDisk("data/config.json"); err != nil {
 		log.Printf("Warning: Failed to reload config from disk: %v", err)
+	}
+
+	if api.logs != nil {
+		api.logs.SetMaxEntries(api.config.MaxLogEntries)
 	}
 
 	log.Println("Configuration updated via API and reloaded")
