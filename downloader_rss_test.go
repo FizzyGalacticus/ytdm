@@ -281,49 +281,38 @@ func TestGetChannelVideosFromRSS(t *testing.T) {
 	downloader := NewDownloader(DefaultConfig())
 	since := time.Date(2026, 3, 16, 0, 0, 0, 0, time.UTC)
 
-	t.Run("filters shorts when disabled and applies publish-date cutoff", func(t *testing.T) {
+	t.Run("returns all recent videos with IsShort flagged, applying publish-date cutoff", func(t *testing.T) {
 		videos, err := downloader.GetChannelVideosFromRSS(
 			"UCtest123",
 			"https://www.youtube.com/channel/UCtest123",
 			since,
-			false,
-		)
-		if err != nil {
-			t.Fatalf("GetChannelVideosFromRSS() error = %v", err)
-		}
-
-		if len(videos) != 1 {
-			t.Fatalf("expected 1 regular recent video, got %d", len(videos))
-		}
-		if videos[0].ID != "regular001" {
-			t.Fatalf("expected video ID regular001, got %s", videos[0].ID)
-		}
-	})
-
-	t.Run("includes shorts when enabled while still applying publish-date cutoff", func(t *testing.T) {
-		videos, err := downloader.GetChannelVideosFromRSS(
-			"UCtest123",
-			"https://www.youtube.com/channel/UCtest123",
-			since,
-			true,
 		)
 		if err != nil {
 			t.Fatalf("GetChannelVideosFromRSS() error = %v", err)
 		}
 
 		if len(videos) != 3 {
-			t.Fatalf("expected 3 recent videos (regular + shorts), got %d", len(videos))
+			t.Fatalf("expected 3 recent videos (regular + 2 shorts), got %d", len(videos))
 		}
 
-		ids := map[string]bool{}
+		byID := map[string]VideoInfo{}
 		for _, v := range videos {
-			ids[v.ID] = true
+			byID[v.ID] = v
 		}
 
 		for _, wantID := range []string{"regular001", "short001", "short-by-id"} {
-			if !ids[wantID] {
+			if _, ok := byID[wantID]; !ok {
 				t.Fatalf("expected video ID %s in results", wantID)
 			}
+		}
+		if byID["regular001"].IsShort {
+			t.Fatal("regular001 should not be marked as a short")
+		}
+		if !byID["short001"].IsShort {
+			t.Fatal("short001 should be marked as a short")
+		}
+		if !byID["short-by-id"].IsShort {
+			t.Fatal("short-by-id should be marked as a short")
 		}
 	})
 
@@ -339,7 +328,6 @@ func TestGetChannelVideosFromRSS(t *testing.T) {
 			"UCtest123",
 			"https://www.youtube.com/channel/UCtest123",
 			since,
-			false,
 		)
 		if err == nil {
 			t.Fatal("expected error for non-200 RSS response")

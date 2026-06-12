@@ -51,7 +51,9 @@ type VideoInfo struct {
 	Uploader    string    `json:"uploader"`
 	UploaderID  string    `json:"uploader_id"`
 	ChannelID   string    `json:"channel_id"`
+	WebpageURL  string    `json:"webpage_url"` // populated from yt-dlp JSON, used for shorts detection
 	PublishTime time.Time `json:"-"`
+	IsShort     bool      `json:"-"`
 }
 
 // Downloader handles yt-dlp operations
@@ -221,7 +223,7 @@ func addJitterSeconds(baseSeconds int, jitterPercent float64) int {
 }
 
 // GetChannelVideos retrieves metadata for all videos from a channel
-func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]VideoInfo, error) {
+func (d *Downloader) GetChannelVideos(channelURL string, since time.Time, downloadShorts bool) ([]VideoInfo, error) {
 	// Use yt-dlp to get video information in JSON format
 	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{
 		"--dump-json",
@@ -248,6 +250,11 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 			continue
 		}
 
+		info.IsShort = isShortYouTubeURL(info.WebpageURL)
+		if !downloadShorts && info.IsShort {
+			continue
+		}
+
 		// Parse upload date in UTC for consistent retention comparisons.
 		if info.UploadDate != "" {
 			t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
@@ -267,7 +274,7 @@ func (d *Downloader) GetChannelVideos(channelURL string, since time.Time) ([]Vid
 // GetChannelVideosFromRSS fetches recent videos from a channel using YouTube's public RSS feed
 // This is much faster than yt-dlp but may miss videos in edge cases
 // Returns VideoInfo for videos published after 'since' time
-func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time, downloadShorts bool) ([]VideoInfo, error) {
+func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since time.Time) ([]VideoInfo, error) {
 	resolvedChannelID, err := resolveRSSChannelID(channelID, channelURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract channel ID: %v", err)
@@ -311,9 +318,7 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 	// Convert RSS entries to VideoInfo
 	var videos []VideoInfo
 	for _, entry := range feed.Entries {
-		if !downloadShorts && isShortRSSEntry(entry) {
-			continue
-		}
+		isShort := isShortRSSEntry(entry)
 
 		// Extract video ID from entry.ID which looks like "yt:video:VIDEO_ID"
 		videoID := extractVideoIDFromRSSEntry(entry)
@@ -328,6 +333,7 @@ func (d *Downloader) GetChannelVideosFromRSS(channelID, channelURL string, since
 				ID:          videoID,
 				Title:       entry.Title,
 				PublishTime: publishedUTC,
+				IsShort:     isShort,
 			})
 		}
 	}
@@ -572,7 +578,7 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 // DownloadVideo downloads a video to the specified directory.
 // expectedVideoID should be provided when known so we can reliably detect whether
 // a file was actually created. If empty, metadata ID is used when available.
-func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool) (*DownloadResult, error) {
+func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string) (*DownloadResult, error) {
 	result := &DownloadResult{}
 
 	// Compute channel directory path (but don't create yet)
@@ -589,16 +595,9 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	// Build format string based on desired quality and format
 	formatStr := d.buildFormatString(quality, format)
 
-	// Build match filters based on shorts preference
-	var matchFilter string
-	if downloadShorts {
-		// Allow shorts: only exclude live streams
-		matchFilter = "!is_live"
-	} else {
-		// Exclude shorts: exclude live streams, short videos, and vertical aspect ratio
-		// Use aspect_ratio field which is a proper float comparison
-		matchFilter = "!is_live & duration>60 & aspect_ratio>=1"
-	}
+	// Exclude live streams for all downloads; shorts are already filtered upstream at
+	// the feed-discovery stage (RSS + yt-dlp listing) so no extra filter is needed here.
+	matchFilter := "!is_live"
 
 	// Build yt-dlp command for download
 	cmdArgs := []string{

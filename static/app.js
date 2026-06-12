@@ -241,9 +241,11 @@ async function loadChannels() {
                         ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
                         : '';
                     const downloadedCount = (ch.downloaded_videos || []).length;
-                    const feedVideos = (ch.feed_videos || []).slice().sort((a, b) =>
-                        new Date(b.published_at || 0) - new Date(a.published_at || 0)
-                    );
+                    const feedVideos = (ch.feed_videos || [])
+                        .filter(fv => ch.download_shorts || !fv.is_short)
+                        .slice().sort((a, b) =>
+                            new Date(b.published_at || 0) - new Date(a.published_at || 0)
+                        );
                     const pendingCount = feedVideos.length;
                     const collapseId = `channel-collapse-${idx}`;
                     const pruningText = ch.disable_pruning

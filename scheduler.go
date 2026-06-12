@@ -319,18 +319,47 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}
 
-	// Always try fast index (RSS) first, then fall back to yt-dlp
-	var videos []VideoInfo
+	// Always try fast index (RSS) first, then fall back to yt-dlp.
+	// Fetch RSS with shorts included so we can retroactively tag any existing
+	// FeedVideo entries that were stored before the IsShort field existed.
+	var allFeedVideos []VideoInfo
 	feedSource := "rss"
-	videos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since, channel.DownloadShorts)
+	allFeedVideos, err = downloader.GetChannelVideosFromRSS(channel.ID, channel.URL, since)
 	if err != nil {
 		logScopef("channel", channel.ID, channel.Name, "RSS feed lookup failed, falling back to yt-dlp: %v", err)
 		feedSource = "yt-dlp"
-		videos, err = downloader.GetChannelVideos(channel.URL, since)
+		// yt-dlp already filters by downloadShorts, so allFeedVideos won't contain shorts here
+		allFeedVideos, err = downloader.GetChannelVideos(channel.URL, since, channel.DownloadShorts)
 	}
 
 	if err != nil {
 		return err
+	}
+
+	// Retroactively patch IsShort on any existing FeedVideos the RSS scan identified as shorts.
+	shortIDsInFeed := make(map[string]bool, len(allFeedVideos))
+	for _, v := range allFeedVideos {
+		if v.IsShort {
+			shortIDsInFeed[v.ID] = true
+		}
+	}
+	for _, fv := range channel.FeedVideos {
+		if shortIDsInFeed[fv.ID] && !fv.IsShort {
+			updated := fv
+			updated.IsShort = true
+			if err := storage.UpsertFeedVideo(channel.ID, updated); err != nil {
+				logScopef("channel", channel.ID, channel.Name, "Failed to update short flag on feed video %s: %v", fv.ID, err)
+			}
+		}
+	}
+
+	// Filter by the channel's shorts preference before any further processing.
+	var videos []VideoInfo
+	for _, v := range allFeedVideos {
+		if !channel.DownloadShorts && v.IsShort {
+			continue
+		}
+		videos = append(videos, v)
 	}
 
 	logScopef("channel", channel.ID, channel.Name, "Feed check complete via %s: discovered %d candidate videos", feedSource, len(videos))
@@ -388,6 +417,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			URL:         normalizeChannelVideoURL(video.ID),
 			PublishedAt: video.PublishTime,
 			AddedAt:     time.Now(),
+			IsShort:     video.IsShort,
 		}
 		if err := storage.UpsertFeedVideo(channel.ID, fv); err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Failed to track feed video %s: %v", video.ID, err)
@@ -422,7 +452,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		// Download the video
 		logScopef("channel", channel.ID, channel.Name, "Attempting download for video %s (%s)", video.ID, video.Title)
 		videoURL := normalizeChannelVideoURL(video.ID)
-		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
+		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat)
 		if err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Download failed for video %s (%s): %v", video.ID, video.Title, err)
 			failedDownloadCount++
@@ -601,7 +631,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	logScopef("video", video.ID, video.Title, "Attempting download for video: %s", video.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(video.URL)
-	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, true)
+	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat)
 	if err != nil {
 		logScopef("video", video.ID, video.Title, "Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval

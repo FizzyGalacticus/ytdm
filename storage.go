@@ -26,6 +26,7 @@ type FeedVideo struct {
 	URL         string    `json:"url"`
 	PublishedAt time.Time `json:"published_at"`
 	AddedAt     time.Time `json:"added_at"`
+	IsShort     bool      `json:"is_short,omitempty"`
 }
 
 // DownloadedVideo tracks a downloaded video with its download date
