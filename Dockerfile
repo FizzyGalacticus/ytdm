@@ -28,6 +28,9 @@ RUN wget -q -O /usr/local/bin/yt-dlp \
     chmod +x /usr/local/bin/yt-dlp && \
     node --version && yt-dlp --version
 
+# Tell yt-dlp to use node for JS extraction (newer yt-dlp defaults to deno-only)
+RUN printf '--js-runtimes node\n' > /etc/yt-dlp.conf
+
 # Create /app directory
 RUN mkdir -p /app
 
