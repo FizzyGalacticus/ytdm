@@ -16,12 +16,17 @@ FROM alpine:3.19
 
 # Install only what's needed: python3, pip, ffmpeg, wget for healthcheck, node for yt-dlp JS extraction
 RUN apk add --no-cache python3 py3-pip ffmpeg wget nodejs && \
-    rm -rf /root/.cache
+    rm -rf /root/.cache && \
+    ln -sf /usr/bin/node /usr/local/bin/node
+
+# Ensure node is always findable by yt-dlp regardless of how PATH is inherited
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Install yt-dlp binary
 RUN wget -q -O /usr/local/bin/yt-dlp \
       https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
-    chmod +x /usr/local/bin/yt-dlp
+    chmod +x /usr/local/bin/yt-dlp && \
+    node --version && yt-dlp --version
 
 # Create /app directory
 RUN mkdir -p /app
