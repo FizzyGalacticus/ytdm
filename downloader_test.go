@@ -522,37 +522,37 @@ func TestBuildFormatString(t *testing.T) {
 			name:           "default quality and mp4",
 			quality:        "",
 			format:         "mp4",
-			expectedSubstr: []string{"bestvideo[ext=mp4]", "bestvideo+bestaudio/best"},
+			expectedSubstr: []string{"bestvideo+bestaudio/best"},
 		},
 		{
 			name:           "best quality with webm",
 			quality:        "best",
 			format:         "webm",
-			expectedSubstr: []string{"bestvideo[ext=webm]", "bestvideo+bestaudio/best"},
+			expectedSubstr: []string{"bestvideo+bestaudio/best"},
 		},
 		{
 			name:           "720p with mp4",
 			quality:        "720",
 			format:         "mp4",
-			expectedSubstr: []string{"bestvideo[height<=720][ext=mp4]", "+bestaudio/"},
+			expectedSubstr: []string{"bestvideo[height<=720]+bestaudio/best"},
 		},
 		{
 			name:           "480p with mkv",
 			quality:        "480",
 			format:         "mkv",
-			expectedSubstr: []string{"bestvideo[height<=480][ext=mkv]", "+bestaudio/"},
+			expectedSubstr: []string{"bestvideo[height<=480]+bestaudio/best"},
 		},
 		{
 			name:           "empty format defaults to mp4",
 			quality:        "1080",
 			format:         "",
-			expectedSubstr: []string{"bestvideo[height<=1080][ext=mp4]"},
+			expectedSubstr: []string{"bestvideo[height<=1080]+bestaudio/best"},
 		},
 		{
 			name:           "360p quality",
 			quality:        "360",
 			format:         "webm",
-			expectedSubstr: []string{"bestvideo[height<=360][ext=webm]"},
+			expectedSubstr: []string{"bestvideo[height<=360]+bestaudio/best"},
 		},
 	}
 
