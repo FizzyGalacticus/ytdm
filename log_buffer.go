@@ -2,17 +2,20 @@ package main
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 var scopePattern = regexp.MustCompile(`\[scope:(channel|video):([^:\]]+):([^\]]*)\]\s*`)
 
 type LogEntry struct {
-	Line      string `json:"line"`
-	ScopeType string `json:"scope_type,omitempty"`
-	ScopeID   string `json:"scope_id,omitempty"`
-	ScopeName string `json:"scope_name,omitempty"`
+	Time      time.Time `json:"time"`
+	Line      string    `json:"line"`
+	ScopeType string    `json:"scope_type,omitempty"`
+	ScopeID   string    `json:"scope_id,omitempty"`
+	ScopeName string    `json:"scope_name,omitempty"`
 }
 
 type LogScope struct {
@@ -83,7 +86,7 @@ func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 			continue
 		}
 
-		entry := LogEntry{Line: line}
+		entry := LogEntry{Line: line, Time: time.Now()}
 		if matches := scopePattern.FindStringSubmatch(line); len(matches) == 4 {
 			entry.ScopeType = strings.TrimSpace(matches[1])
 			entry.ScopeID = strings.TrimSpace(matches[2])
@@ -129,6 +132,9 @@ func (lb *LogBuffer) getStructuredEntries(scopeType, scopeID string) []LogEntry 
 		}
 		result = append(result, bucket...)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Time.Before(result[j].Time)
+	})
 	return result
 }
 

@@ -227,7 +227,7 @@ func TestIsShortRSSEntry(t *testing.T) {
 
 func TestGetChannelVideosFromRSS(t *testing.T) {
 	rssXML := `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015/metadata">
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015">
   <entry>
     <id>yt:video:regular001</id>
     <title>Regular Video</title>

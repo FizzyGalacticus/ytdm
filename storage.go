@@ -280,6 +280,33 @@ func (s *Storage) PruneFeedVideos(channelID string, cutoff time.Time) error {
 	return nil
 }
 
+// AddPrunedVideo adds a video directly to a channel's pruned list without
+// requiring it to have been downloaded first. Used for shorts rejected at
+// download time so they are not re-discovered on the next scheduler run.
+func (s *Storage) AddPrunedVideo(channelID, videoID string, publishDate time.Time) error {
+	if videoID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		for _, pv := range s.data.Channels[i].PrunedVideos {
+			if pv.ID == videoID {
+				return nil // already present
+			}
+		}
+		s.data.Channels[i].PrunedVideos = append(s.data.Channels[i].PrunedVideos, PrunedVideo{
+			ID:          videoID,
+			PublishDate: publishDate,
+		})
+		return s.save()
+	}
+	return nil
+}
+
 // UpdateChannelID updates the ID field for a channel (used for migrations)
 func (s *Storage) UpdateChannelID(oldID, newID string) error {
 	s.mu.Lock()

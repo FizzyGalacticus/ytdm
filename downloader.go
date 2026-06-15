@@ -33,7 +33,7 @@ type RSSEntry struct {
 	ID        string    `xml:"id"`
 	Title     string    `xml:"title"`
 	Published time.Time `xml:"published"`
-	VideoID   string    `xml:"http://www.youtube.com/xml/schemas/2015/metadata videoId"`
+	VideoID   string    `xml:"http://www.youtube.com/xml/schemas/2015 videoId"`
 	Links     []RSSLink `xml:"link"`
 }
 
@@ -65,6 +65,7 @@ type Downloader struct {
 type DownloadResult struct {
 	Downloaded  bool
 	Skipped     bool
+	IsShort     bool   // true when the video was identified as a YouTube Short at download time
 	SkipReason  string
 	VideoID     string
 	VideoTitle  string
@@ -578,7 +579,7 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 // DownloadVideo downloads a video to the specified directory.
 // expectedVideoID should be provided when known so we can reliably detect whether
 // a file was actually created. If empty, metadata ID is used when available.
-func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string) (*DownloadResult, error) {
+func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool) (*DownloadResult, error) {
 	result := &DownloadResult{}
 
 	// Compute channel directory path (but don't create yet)
@@ -595,9 +596,10 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	// Build format string based on desired quality and format
 	formatStr := d.buildFormatString(quality, format)
 
-	// Exclude live streams for all downloads; shorts are already filtered upstream at
-	// the feed-discovery stage (RSS + yt-dlp listing) so no extra filter is needed here.
 	matchFilter := "!is_live"
+	if !downloadShorts {
+		matchFilter += " & webpage_url!*=/shorts/"
+	}
 
 	// Build yt-dlp command for download
 	cmdArgs := []string{
@@ -687,6 +689,12 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 			}
 			result.Skipped = true
 			result.SkipReason = reason
+			// With --quiet, yt-dlp writes match-filter rejections to stdout via
+			// to_stdout(); some versions may use stderr instead. Check both so
+			// callers can always clean up shorts that reach the download stage.
+			if !downloadShorts && (strings.Contains(stdout.String(), "/shorts/") || strings.Contains(stderr.String(), "/shorts/")) {
+				result.IsShort = true
+			}
 			return result, nil
 		}
 	}

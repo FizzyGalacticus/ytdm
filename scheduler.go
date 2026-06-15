@@ -344,7 +344,16 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		}
 	}
 	for _, fv := range channel.FeedVideos {
-		if shortIDsInFeed[fv.ID] && !fv.IsShort {
+		isKnownShort := fv.IsShort || shortIDsInFeed[fv.ID]
+		if isKnownShort && !channel.DownloadShorts {
+			// Remove shorts from the pending feed so they don't show as perpetually pending.
+			if err := storage.RemoveFeedVideo(channel.ID, fv.ID); err != nil {
+				logScopef("channel", channel.ID, channel.Name, "Failed to remove short feed video %s: %v", fv.ID, err)
+			}
+			if err := storage.AddPrunedVideo(channel.ID, fv.ID, fv.PublishedAt); err != nil {
+				logScopef("channel", channel.ID, channel.Name, "Failed to prune short video %s: %v", fv.ID, err)
+			}
+		} else if shortIDsInFeed[fv.ID] && !fv.IsShort {
 			updated := fv
 			updated.IsShort = true
 			if err := storage.UpsertFeedVideo(channel.ID, updated); err != nil {
@@ -452,7 +461,7 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		// Download the video
 		logScopef("channel", channel.ID, channel.Name, "Attempting download for video %s (%s)", video.ID, video.Title)
 		videoURL := normalizeChannelVideoURL(video.ID)
-		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat)
+		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
 		if err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Download failed for video %s (%s): %v", video.ID, video.Title, err)
 			failedDownloadCount++
@@ -461,7 +470,17 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			}
 			// Continue with other videos even if one fails
 		} else if result != nil && result.Skipped {
-			logScopef("channel", channel.ID, channel.Name, "Skipped video %s (%s): %s", video.ID, video.Title, result.SkipReason)
+			if result.IsShort {
+				logScopef("channel", channel.ID, channel.Name, "Filtered short video %s (%s): removing from feed", video.ID, video.Title)
+				if err := storage.RemoveFeedVideo(channel.ID, video.ID); err != nil {
+					logScopef("channel", channel.ID, channel.Name, "Failed to remove short feed video %s: %v", video.ID, err)
+				}
+				if err := storage.AddPrunedVideo(channel.ID, video.ID, video.PublishTime); err != nil {
+					logScopef("channel", channel.ID, channel.Name, "Failed to prune short video %s: %v", video.ID, err)
+				}
+			} else {
+				logScopef("channel", channel.ID, channel.Name, "Skipped video %s (%s): %s", video.ID, video.Title, result.SkipReason)
+			}
 			skippedCount++
 		} else {
 			// Mark as downloaded
@@ -631,7 +650,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	logScopef("video", video.ID, video.Title, "Attempting download for video: %s", video.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(video.URL)
-	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat)
+	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
 	if err != nil {
 		logScopef("video", video.ID, video.Title, "Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval
