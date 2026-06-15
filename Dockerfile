@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -11,25 +11,22 @@ COPY static ./static
 ARG GIT_COMMIT=dev
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags "-extldflags '-static' -s -w -X main.gitCommit=${GIT_COMMIT}" -o ytdm .
 
-# Runtime stage - use minimal alpine
-FROM alpine:3.19
+# Runtime stage - Deno's Alpine image provides a working Deno build
+# yt-dlp standalone binary bundles its own Python, so no system Python needed
+FROM denoland/deno:alpine
 
-# Install only what's needed: python3, pip, ffmpeg, wget for healthcheck, node for yt-dlp JS extraction
-RUN apk add --no-cache python3 py3-pip ffmpeg wget nodejs && \
-    rm -rf /root/.cache && \
-    ln -sf /usr/bin/node /usr/local/bin/node
+RUN apk add --no-cache ffmpeg wget && \
+    rm -rf /root/.cache
 
-# Ensure node is always findable by yt-dlp regardless of how PATH is inherited
 ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-# Install yt-dlp binary
-RUN wget -q -O /usr/local/bin/yt-dlp \
-      https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
+# Install yt-dlp standalone binary (musl = statically linked, no Python needed)
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then YTDLP_BIN="yt-dlp_musllinux_aarch64"; else YTDLP_BIN="yt-dlp_musllinux"; fi && \
+    wget -q -O /usr/local/bin/yt-dlp \
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_BIN}" && \
     chmod +x /usr/local/bin/yt-dlp && \
-    node --version && yt-dlp --version
-
-# Tell yt-dlp to use node for JS extraction (newer yt-dlp defaults to deno-only)
-RUN printf '--js-runtimes node\n' > /etc/yt-dlp.conf
+    deno --version && yt-dlp --version
 
 # Create /app directory
 RUN mkdir -p /app

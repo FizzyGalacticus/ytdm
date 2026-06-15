@@ -90,7 +90,6 @@ func (d *Downloader) buildBaseOptions() []string {
 		"--user-agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
 		"--socket-timeout", "30",
 		"--extractor-args", "youtube:lang=en",
-		"--js-runtimes", "node",
 		"--windows-filenames",
 		"--quiet",
 	}
@@ -566,14 +565,10 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 	}
 
 	if quality == "" || quality == "best" {
-		// Prefer video in specified format, but don't filter audio by extension
-		// Audio streams may not be available in the target container format
-		return fmt.Sprintf("bestvideo[ext=%s]+bestaudio/bestvideo+bestaudio/best", format)
+		return "bestvideo+bestaudio/best"
 	}
 
-	// For specific quality heights, prefer video in specified format with any audio
-	// The merge-output-format option will handle container conversion
-	return fmt.Sprintf("bestvideo[height<=%s][ext=%s]+bestaudio/bestvideo[height<=%s]+bestaudio/best", quality, format, quality)
+	return fmt.Sprintf("bestvideo[height<=%s]+bestaudio/best", quality)
 }
 
 // DownloadVideo downloads a video to the specified directory.
