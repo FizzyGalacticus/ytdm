@@ -358,7 +358,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 	fv := *feedVideo
 	go func() {
 		dl := NewDownloader(api.config)
-		result, err := dl.DownloadVideo(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true)
+		result, err := dl.DownloadVideo(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true, false)
 		if err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Manual download failed for video %s: %v", fv.ID, err)
 			if setErr := api.storage.SetChannelError(ch.ID, fmt.Sprintf("Manual download of %q failed: %v", fv.Title, err)); setErr != nil {

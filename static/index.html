@@ -83,6 +83,11 @@
             border-radius: 0.35rem;
             color: #101418;
             display: inline-block;
+            cursor: pointer;
+        }
+        .log-line .scope-pill:hover {
+            opacity: 0.8;
+            text-decoration: underline;
         }
     </style>
 </head>
@@ -202,7 +207,12 @@
 
                 <div class="card mb-4">
                     <div class="card-body">
-                        <h5 class="card-title">Monitored Channels</h5>
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h5 class="card-title mb-0">Monitored Channels</h5>
+                            <button id="filterPendingBtn" class="btn btn-sm btn-outline-warning" onclick="togglePendingFilter()" title="Show only channels with pending videos">
+                                <i class="bi bi-hourglass-split me-1"></i>Pending Only
+                            </button>
+                        </div>
                         <div id="channelsList">Loading...</div>
                     </div>
                 </div>

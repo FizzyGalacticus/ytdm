@@ -112,9 +112,6 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 			}
 		}
 
-		for _, channelDir := range channelDirs {
-			removeIfEmpty(channelDir)
-		}
 	}
 
 	if result.VideosPruned > 0 || result.FilesRemoved > 0 {
@@ -292,10 +289,3 @@ func moveMatchedFilesToSanitizedChannelDir(downloadDir, channelName, videoID str
 	return moved, nil
 }
 
-func removeIfEmpty(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		return
-	}
-	_ = os.Remove(dir)
-}

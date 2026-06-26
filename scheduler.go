@@ -67,46 +67,29 @@ func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 func checkAndDownload(ctx context.Context, config *Config, storage *Storage, downloader *Downloader) {
 	log.Println("Starting scheduled check for new videos...")
 
-	// Track if we're shutting down
-	var shutdownMu sync.RWMutex
-	shuttingDown := false
-
-	// Create a semaphore to limit concurrent operations
-	semaphore := make(chan struct{}, config.MaxConcurrent)
+	// downloadSemaphore limits concurrent video downloads. RSS feed checks are
+	// intentionally not throttled so a slow download cannot delay another
+	// channel's feed check.
+	downloadSemaphore := make(chan struct{}, config.MaxConcurrent)
 	var wg sync.WaitGroup
-
-	// Monitor for shutdown signal
-	go func() {
-		<-ctx.Done()
-		shutdownMu.Lock()
-		shuttingDown = true
-		shutdownMu.Unlock()
-		log.Println("Shutdown signal received, finishing in-progress operations...")
-	}()
 
 	// Get all channels and videos upfront
 	channels := storage.GetChannels()
 	videos := storage.GetVideos()
 
-	// Check channels in parallel
+	// Check channels in parallel. Goroutines start immediately without
+	// acquiring a semaphore — the semaphore is held only during downloads
+	// inside processChannel.
 	for _, channel := range channels {
-		shutdownMu.RLock()
-		if shuttingDown {
-			shutdownMu.RUnlock()
+		if ctx.Err() != nil {
 			log.Println("Skipping remaining channels due to shutdown")
 			break
 		}
-		shutdownMu.RUnlock()
 
 		wg.Add(1)
 		go func(ch Channel) {
 			defer wg.Done()
-
-			// Acquire semaphore
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			if err := processChannel(ctx, ch, config, storage, downloader); err != nil {
+			if err := processChannel(ctx, ch, config, storage, downloader, downloadSemaphore); err != nil {
 				storage.SetChannelError(ch.ID, err.Error())
 			} else {
 				storage.ClearChannelError(ch.ID)
@@ -114,23 +97,23 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 		}(channel)
 	}
 
-	// Check individual videos in parallel
+	// Check individual videos in parallel (download-only, semaphore applies)
 	for _, video := range videos {
-		shutdownMu.RLock()
-		if shuttingDown {
-			shutdownMu.RUnlock()
+		if ctx.Err() != nil {
 			log.Println("Skipping remaining videos due to shutdown")
 			break
 		}
-		shutdownMu.RUnlock()
 
 		wg.Add(1)
 		go func(vid Video) {
 			defer wg.Done()
 
-			// Acquire semaphore
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+			select {
+			case downloadSemaphore <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-downloadSemaphore }()
 
 			if err := processVideo(ctx, vid, config, storage, downloader); err != nil {
 				storage.SetVideoError(vid.ID, err.Error())
@@ -140,20 +123,16 @@ func checkAndDownload(ctx context.Context, config *Config, storage *Storage, dow
 		}(video)
 	}
 
-	// Wait for all checks and downloads to complete
+	// Wait for all feed checks and downloads to complete
 	log.Println("Waiting for in-progress operations to complete...")
 	wg.Wait()
 	log.Println("All operations completed")
 
-	// Only run cleanup if not shutting down
-	shutdownMu.RLock()
-	if !shuttingDown {
-		shutdownMu.RUnlock()
-		cleanupOldVideos(ctx, channels, videos, downloader, storage)
-	} else {
-		shutdownMu.RUnlock()
+	if ctx.Err() != nil {
 		log.Println("Skipping cleanup due to shutdown")
+		return
 	}
+	cleanupOldVideos(ctx, channels, videos, downloader, storage)
 
 	log.Println("Scheduled check completed")
 }
@@ -253,8 +232,10 @@ waitForCleanup:
 	wg.Wait()
 }
 
-// processChannel checks a channel for new videos and downloads them
-func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader) (err error) {
+// processChannel checks a channel for new videos and downloads them.
+// downloadSemaphore is acquired around each individual download so that RSS feed
+// checks for all channels can proceed in parallel without waiting for downloads.
+func processChannel(ctx context.Context, channel Channel, config *Config, storage *Storage, downloader *Downloader, downloadSemaphore chan struct{}) (err error) {
 	effectiveRetention := EffectiveRetentionDays(channel.RetentionDays, getDefaultRetentionDays(downloader))
 	logScopef("channel", channel.ID, channel.Name, "Processing channel: %s (retention: %d days)", channel.Name, effectiveRetention)
 
@@ -438,6 +419,16 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 		return nil
 	}
 
+	// Build a set of video IDs that were previously marked as manual-download-only
+	// (e.g. because their duration is under 2 minutes). These stay in FeedVideos so
+	// the user can download them manually, but the scheduler skips them.
+	manualDownloadOnly := make(map[string]bool, len(channel.FeedVideos))
+	for _, fv := range channel.FeedVideos {
+		if fv.ManualDownloadOnly {
+			manualDownloadOnly[fv.ID] = true
+		}
+	}
+
 	// If auto-download is disabled, videos have been tracked in FeedVideos but
 	// will not be downloaded automatically; they can be downloaded manually via the UI.
 	if channel.SkipAutoDownload {
@@ -451,17 +442,26 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 			return nil
 		}
 
-		// Check if we should start a new download
-		select {
-		case <-ctx.Done():
-			return nil // Return nil to not count as error
-		default:
+		// Skip videos flagged as manual-download-only (e.g. under 2 minutes).
+		if manualDownloadOnly[video.ID] {
+			logScopef("channel", channel.ID, channel.Name, "Skipping auto-download for video %s (%s): manual download only (too short)", video.ID, video.Title)
+			skippedCount++
+			continue
 		}
 
-		// Download the video
+		// Acquire the download semaphore; RSS checks have already completed for
+		// all channels by the time we reach this point in each goroutine, so
+		// other channels' feeds are not blocked waiting here.
+		select {
+		case downloadSemaphore <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
+
 		logScopef("channel", channel.ID, channel.Name, "Attempting download for video %s (%s)", video.ID, video.Title)
 		videoURL := normalizeChannelVideoURL(video.ID)
-		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts)
+		result, err := downloader.DownloadVideo(videoURL, video.ID, channel.Name, channel.VideoQuality, channel.VideoFormat, channel.DownloadShorts, true)
+		<-downloadSemaphore
 		if err != nil {
 			logScopef("channel", channel.ID, channel.Name, "Download failed for video %s (%s): %v", video.ID, video.Title, err)
 			failedDownloadCount++
@@ -477,6 +477,11 @@ func processChannel(ctx context.Context, channel Channel, config *Config, storag
 				}
 				if err := storage.AddPrunedVideo(channel.ID, video.ID, video.PublishTime); err != nil {
 					logScopef("channel", channel.ID, channel.Name, "Failed to prune short video %s: %v", video.ID, err)
+				}
+			} else if result.IsTooShort {
+				logScopef("channel", channel.ID, channel.Name, "Video %s (%s) is under 2 minutes: flagging for manual download only", video.ID, video.Title)
+				if err := storage.MarkFeedVideoManualOnly(channel.ID, video.ID); err != nil {
+					logScopef("channel", channel.ID, channel.Name, "Failed to mark video %s as manual-only: %v", video.ID, err)
 				}
 			} else {
 				logScopef("channel", channel.ID, channel.Name, "Skipped video %s (%s): %s", video.ID, video.Title, result.SkipReason)
@@ -650,7 +655,7 @@ func processVideo(ctx context.Context, video Video, config *Config, storage *Sto
 	logScopef("video", video.ID, video.Title, "Attempting download for video: %s", video.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(video.URL)
-	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts)
+	result, err := downloader.DownloadVideo(video.URL, precheckedVideoID, channelName, video.VideoQuality, video.VideoFormat, video.DownloadShorts, false)
 	if err != nil {
 		logScopef("video", video.ID, video.Title, "Failed to download video %s: %v", video.Title, err)
 		// Don't mark as downloaded - will retry on next interval

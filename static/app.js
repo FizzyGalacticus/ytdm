@@ -41,6 +41,17 @@ let knownLogScopes = [];
 let _currentVideoGroups = {};
 let _currentSingletonVideos = {};
 let _trackedChannelIDs = new Set();
+let _pendingFilterActive = false;
+
+function togglePendingFilter() {
+    _pendingFilterActive = !_pendingFilterActive;
+    const btn = document.getElementById('filterPendingBtn');
+    if (btn) {
+        btn.classList.toggle('btn-outline-warning', !_pendingFilterActive);
+        btn.classList.toggle('btn-warning', _pendingFilterActive);
+    }
+    loadChannels();
+}
 
 const _qualityOrder = { '360': 1, '480': 2, '720': 3, '1080': 4, '1440': 5, '2160': 6, 'best': 10 };
 
@@ -223,12 +234,20 @@ async function loadChannels() {
         const response = await fetch(`${API_BASE}/channels`);
         const data = await response.json();
         if (data.success) {
-            const channels = (data.data || []).slice().sort((a, b) =>
+            const allChannels = (data.data || []).slice().sort((a, b) =>
                 (a.name || '').localeCompare((b.name || ''), undefined, { sensitivity: 'base' })
             );
-            _trackedChannelIDs = new Set(channels.map(ch => ch.id).filter(Boolean));
-            if (channels.length === 0) {
+            _trackedChannelIDs = new Set(allChannels.map(ch => ch.id).filter(Boolean));
+            const channels = _pendingFilterActive
+                ? allChannels.filter(ch => {
+                    const feedVideos = (ch.feed_videos || []).filter(fv => ch.download_shorts || !fv.is_short);
+                    return feedVideos.length > 0;
+                })
+                : allChannels;
+            if (allChannels.length === 0) {
                 document.getElementById('channelsList').innerHTML = '<p class="text-muted">No channels configured</p>';
+            } else if (channels.length === 0) {
+                document.getElementById('channelsList').innerHTML = '<p class="text-muted">No channels with pending videos</p>';
             } else {
                 document.getElementById('channelsList').innerHTML = channels.map((ch, idx) => {
                     const cutoffText = ch.cutoff_date && ch.cutoff_date !== '0001-01-01T00:00:00Z' 
@@ -676,8 +695,11 @@ async function loadLogs() {
             const key = scopeType && scopeID ? `${scopeType}:${scopeID}` : 'global';
             const scopeColor = hashColorFromScopeKey(key);
             const label = scopeType && scopeID ? `${scopeType}:${scopeName}` : 'general';
+            const pillAttrs = scopeType && scopeID
+                ? `onclick="openScopedLogs('${scopeType.replace(/'/g, "\\'")}', '${scopeID.replace(/'/g, "\\'")}', '${scopeName.replace(/'/g, "\\'")}')" title="Filter to this log stream"`
+                : '';
             return `<div class="log-line" style="border-left-color:${scopeColor};">
-                <span class="scope-pill" style="background:${scopeColor};">${escapeHtml(label)}</span>${escapeHtml(entry.line || '')}
+                <span class="scope-pill" style="background:${scopeColor};" ${pillAttrs}>${escapeHtml(label)}</span>${escapeHtml(entry.line || '')}
             </div>`;
         }).join('');
 

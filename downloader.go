@@ -52,6 +52,7 @@ type VideoInfo struct {
 	UploaderID  string    `json:"uploader_id"`
 	ChannelID   string    `json:"channel_id"`
 	WebpageURL  string    `json:"webpage_url"` // populated from yt-dlp JSON, used for shorts detection
+	Duration    int       `json:"duration"`    // video duration in seconds, populated from yt-dlp JSON
 	PublishTime time.Time `json:"-"`
 	IsShort     bool      `json:"-"`
 }
@@ -66,6 +67,7 @@ type DownloadResult struct {
 	Downloaded  bool
 	Skipped     bool
 	IsShort     bool   // true when the video was identified as a YouTube Short at download time
+	IsTooShort  bool   // true when the video was skipped because its duration is under the 2-minute minimum
 	SkipReason  string
 	VideoID     string
 	VideoTitle  string
@@ -574,7 +576,9 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 // DownloadVideo downloads a video to the specified directory.
 // expectedVideoID should be provided when known so we can reliably detect whether
 // a file was actually created. If empty, metadata ID is used when available.
-func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool) (*DownloadResult, error) {
+// enforceMinDuration, when true, adds a duration>=120 match-filter so videos under
+// 2 minutes are skipped for auto-downloads; pass false for manual downloads.
+func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quality, format string, downloadShorts bool, enforceMinDuration bool) (*DownloadResult, error) {
 	result := &DownloadResult{}
 
 	// Compute channel directory path (but don't create yet)
@@ -594,6 +598,9 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	matchFilter := "!is_live"
 	if !downloadShorts {
 		matchFilter += " & webpage_url!*=/shorts/"
+	}
+	if enforceMinDuration {
+		matchFilter += " & duration>=120"
 	}
 
 	// Build yt-dlp command for download
@@ -658,6 +665,12 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 				reason := extractSkipReason(errOutput)
 				result.Skipped = true
 				result.SkipReason = reason
+				if enforceMinDuration {
+					combined := strings.ToLower(errOutput + " " + stdout.String())
+					if strings.Contains(combined, "duration") && strings.Contains(combined, "filter") {
+						result.IsTooShort = true
+					}
+				}
 				return result, nil
 			}
 			return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", runErr, errOutput)
@@ -689,6 +702,12 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 			// callers can always clean up shorts that reach the download stage.
 			if !downloadShorts && (strings.Contains(stdout.String(), "/shorts/") || strings.Contains(stderr.String(), "/shorts/")) {
 				result.IsShort = true
+			}
+			if enforceMinDuration && !result.IsShort {
+				combined := strings.ToLower(stdout.String() + " " + strings.TrimSpace(stderr.String()))
+				if strings.Contains(combined, "duration") && strings.Contains(combined, "filter") {
+					result.IsTooShort = true
+				}
 			}
 			return result, nil
 		}
@@ -1216,17 +1235,6 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 		return nil
 	})
-
-	// After cleanup, check if directory is empty and remove it
-	if err == nil {
-		entries, readErr := os.ReadDir(channelDir)
-		if readErr == nil && len(entries) == 0 {
-			logScopef("channel", channelID, channelName, "Removing empty channel directory: %s", channelDir)
-			if rmErr := os.Remove(channelDir); rmErr != nil {
-				logScopef("channel", channelID, channelName, "Failed to remove empty directory %s: %v", channelDir, rmErr)
-			}
-		}
-	}
 
 	return err
 }

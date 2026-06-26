@@ -21,12 +21,13 @@ type PrunedVideo struct {
 // FeedVideo records a video seen in the channel's RSS feed that falls within the
 // retention window but has not yet been downloaded.
 type FeedVideo struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	URL         string    `json:"url"`
-	PublishedAt time.Time `json:"published_at"`
-	AddedAt     time.Time `json:"added_at"`
-	IsShort     bool      `json:"is_short,omitempty"`
+	ID                 string    `json:"id"`
+	Title              string    `json:"title"`
+	URL                string    `json:"url"`
+	PublishedAt        time.Time `json:"published_at"`
+	AddedAt            time.Time `json:"added_at"`
+	IsShort            bool      `json:"is_short,omitempty"`
+	ManualDownloadOnly bool      `json:"manual_download_only,omitempty"` // set when duration < 2 min; skip auto-download
 }
 
 // DownloadedVideo tracks a downloaded video with its download date
@@ -218,6 +219,8 @@ func (s *Storage) UpdateChannel(id string, retentionDays int, disablePruning boo
 }
 
 // UpsertFeedVideo adds or updates a video in the channel's FeedVideos list.
+// ManualDownloadOnly is preserved from the existing entry so that a duration-based
+// skip flag is not overwritten when the RSS feed re-discovers the same video.
 func (s *Storage) UpsertFeedVideo(channelID string, video FeedVideo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -227,12 +230,38 @@ func (s *Storage) UpsertFeedVideo(channelID string, video FeedVideo) error {
 		}
 		for j, fv := range s.data.Channels[i].FeedVideos {
 			if fv.ID == video.ID {
+				if fv.ManualDownloadOnly {
+					video.ManualDownloadOnly = true
+				}
 				s.data.Channels[i].FeedVideos[j] = video
 				return s.save()
 			}
 		}
 		s.data.Channels[i].FeedVideos = append(s.data.Channels[i].FeedVideos, video)
 		return s.save()
+	}
+	return nil
+}
+
+// MarkFeedVideoManualOnly sets ManualDownloadOnly=true on a feed video entry,
+// indicating it should not be auto-downloaded (e.g. because it's under 2 minutes).
+func (s *Storage) MarkFeedVideoManualOnly(channelID, videoID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID != channelID {
+			continue
+		}
+		for j, fv := range s.data.Channels[i].FeedVideos {
+			if fv.ID == videoID {
+				if s.data.Channels[i].FeedVideos[j].ManualDownloadOnly {
+					return nil // already set, no write needed
+				}
+				s.data.Channels[i].FeedVideos[j].ManualDownloadOnly = true
+				return s.save()
+			}
+		}
+		return nil
 	}
 	return nil
 }
