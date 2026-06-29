@@ -281,151 +281,181 @@
                 <div class="card mb-4">
                     <div class="card-body">
                         <form id="configForm">
-                    <div class="row g-3">
-                        <div class="col-12">
-                            <label class="form-label"><strong>Check Interval</strong></label>
-                            <div class="row g-2">
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="checkIntervalH" min="0" placeholder="Hours" value="0">
+                            <div class="row g-3">
+
+                                <!-- Check Interval — compact with h/m/s labels -->
+                                <div class="col-12">
+                                    <label class="form-label fw-semibold">Check Interval</label>
+                                    <div class="d-flex gap-2 align-items-end">
+                                        <div>
+                                            <label for="checkIntervalH" class="form-label text-muted small mb-1">Hours</label>
+                                            <input type="number" class="form-control form-control-sm" id="checkIntervalH" min="0" value="0" style="width:72px;">
+                                        </div>
+                                        <div>
+                                            <label for="checkIntervalM" class="form-label text-muted small mb-1">Minutes</label>
+                                            <input type="number" class="form-control form-control-sm" id="checkIntervalM" min="0" max="59" value="5" style="width:72px;">
+                                        </div>
+                                        <div>
+                                            <label for="checkIntervalS" class="form-label text-muted small mb-1">Seconds</label>
+                                            <input type="number" class="form-control form-control-sm" id="checkIntervalS" min="0" max="59" value="0" style="width:72px;">
+                                        </div>
+                                    </div>
                                 </div>
+
+                                <!-- Retention / Defaults / Pruning group -->
                                 <div class="col-md-2">
-                                    <input type="number" class="form-control" id="checkIntervalM" min="0" max="59" placeholder="Minutes" value="5">
+                                    <label for="retentionDays" class="form-label">Retention Days</label>
+                                    <input type="number" class="form-control" id="retentionDays" min="1" required>
                                 </div>
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="checkIntervalS" min="0" max="59" placeholder="Seconds" value="0">
+                                <div class="col-md-3">
+                                    <label for="defaultVideoFormat" class="form-label">Default Format</label>
+                                    <select class="form-select" id="defaultVideoFormat">
+                                        <option value="mp4">MP4</option>
+                                        <option value="webm">WebM</option>
+                                        <option value="mkv">MKV</option>
+                                    </select>
                                 </div>
+                                <div class="col-md-3">
+                                    <label for="defaultVideoQuality" class="form-label">Default Quality</label>
+                                    <select class="form-select" id="defaultVideoQuality">
+                                        <option value="">No Global Default</option>
+                                        <option value="best">Best</option>
+                                        <option value="1080">1080p</option>
+                                        <option value="720">720p</option>
+                                        <option value="480">480p</option>
+                                        <option value="360">360p</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4 d-flex align-items-end">
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input" type="checkbox" id="disablePruning">
+                                        <label class="form-check-label" for="disablePruning">Disable all pruning globally</label>
+                                    </div>
+                                </div>
+
+                                <!-- General settings -->
+                                <div class="col-md-6">
+                                    <label for="downloadDir" class="form-label">Download Directory</label>
+                                    <input type="text" class="form-control" id="downloadDir" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="maxConcurrent" class="form-label">Max Concurrent Downloads</label>
+                                    <input type="number" class="form-control" id="maxConcurrent" min="1" max="10" required>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="maxLogEntries" class="form-label">Max Log Entries</label>
+                                    <input type="number" class="form-control" id="maxLogEntries" min="10" max="10000" required>
+                                    <small class="text-muted">Per channel / video</small>
+                                </div>
+
+                                <!-- yt-dlp collapsible section -->
+                                <div class="col-12">
+                                    <button class="btn btn-outline-secondary btn-sm" type="button"
+                                            data-bs-toggle="collapse" data-bs-target="#ytdlpSettings"
+                                            aria-expanded="false" aria-controls="ytdlpSettings">
+                                        <i class="bi bi-chevron-down me-1"></i>yt-dlp Settings
+                                    </button>
+                                    <div class="collapse mt-3" id="ytdlpSettings">
+                                        <div class="border border-secondary rounded p-3">
+                                            <div class="row g-3">
+
+                                                <!-- yt-dlp Update Interval -->
+                                                <div class="col-12">
+                                                    <label class="form-label fw-semibold">Update Interval</label>
+                                                    <div class="d-flex gap-2 align-items-end">
+                                                        <div>
+                                                            <label for="ytDlpUpdateIntervalH" class="form-label text-muted small mb-1">Hours</label>
+                                                            <input type="number" class="form-control form-control-sm" id="ytDlpUpdateIntervalH" min="0" value="24" style="width:72px;">
+                                                        </div>
+                                                        <div>
+                                                            <label for="ytDlpUpdateIntervalM" class="form-label text-muted small mb-1">Minutes</label>
+                                                            <input type="number" class="form-control form-control-sm" id="ytDlpUpdateIntervalM" min="0" max="59" value="0" style="width:72px;">
+                                                        </div>
+                                                        <div>
+                                                            <label for="ytDlpUpdateIntervalS" class="form-label text-muted small mb-1">Seconds</label>
+                                                            <input type="number" class="form-control form-control-sm" id="ytDlpUpdateIntervalS" min="0" max="59" value="0" style="width:72px;">
+                                                        </div>
+                                                        <small class="text-muted align-self-center ms-1">Set to 0 to disable auto-updates</small>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Extractor Sleep Interval -->
+                                                <div class="col-12">
+                                                    <label class="form-label fw-semibold">Extractor Sleep Interval</label>
+                                                    <div class="d-flex gap-2 align-items-end">
+                                                        <div>
+                                                            <label for="extractorSleepIntervalH" class="form-label text-muted small mb-1">Hours</label>
+                                                            <input type="number" class="form-control form-control-sm" id="extractorSleepIntervalH" min="0" value="0" style="width:72px;">
+                                                        </div>
+                                                        <div>
+                                                            <label for="extractorSleepIntervalM" class="form-label text-muted small mb-1">Minutes</label>
+                                                            <input type="number" class="form-control form-control-sm" id="extractorSleepIntervalM" min="0" max="59" value="0" style="width:72px;">
+                                                        </div>
+                                                        <div>
+                                                            <label for="extractorSleepIntervalS" class="form-label text-muted small mb-1">Seconds</label>
+                                                            <input type="number" class="form-control form-control-sm" id="extractorSleepIntervalS" min="0" max="59" value="0" style="width:72px;">
+                                                        </div>
+                                                        <small class="text-muted align-self-center ms-1">Adds jitter to reduce rate limiting (0 to disable)</small>
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-md-6">
+                                                    <label for="downloadThroughputLimit" class="form-label">Download Throughput Limit</label>
+                                                    <input type="text" class="form-control" id="downloadThroughputLimit" placeholder="e.g. 100K, 4.2M">
+                                                    <small class="text-muted">Leave blank for no limit</small>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label for="ytDlpCacheDir" class="form-label">Cache Directory</label>
+                                                    <input type="text" class="form-control" id="ytDlpCacheDir" placeholder="data/yt-dlp-cache">
+                                                </div>
+                                                <div class="col-12">
+                                                    <div class="form-check">
+                                                        <input class="form-check-input" type="checkbox" id="restrictFilenames">
+                                                        <label class="form-check-label" for="restrictFilenames">
+                                                            Restrict filenames (--restrict-filenames)
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <div class="col-12">
+                                                    <label for="fileNamePattern" class="form-label">File Name Pattern</label>
+                                                    <input type="text" class="form-control" id="fileNamePattern" required>
+                                                </div>
+                                                <div class="col-12">
+                                                    <div class="alert alert-info mb-0">
+                                                        <strong>Cookies (Optional)</strong><br>
+                                                        <small>Use cookies to bypass YouTube's "sign in to confirm you're not a bot" errors.</small>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label for="cookiesBrowser" class="form-label">Browser Cookie Source</label>
+                                                    <select class="form-control" id="cookiesBrowser">
+                                                        <option value="">Disabled</option>
+                                                        <option value="firefox">Firefox</option>
+                                                        <option value="chrome">Chrome</option>
+                                                    </select>
+                                                    <small class="text-muted">Extract cookies from your browser</small>
+                                                </div>
+                                                <div class="col-12">
+                                                    <label for="cookiesPaste" class="form-label">Or Paste Cookies (Netscape Format)</label>
+                                                    <textarea class="form-control" id="cookiesPaste" rows="6" placeholder="# Netscape HTTP Cookie File&#10;# Paste your cookies here...&#10;.youtube.com	TRUE	/	TRUE	1800000000	COOKIE_NAME	cookie_value"></textarea>
+                                                    <small class="text-muted">Paste the contents of a Netscape format cookies file</small>
+                                                    <div class="mt-2">
+                                                        <button type="button" class="btn btn-sm btn-secondary" id="saveCookiesBtn"><i class="bi bi-save"></i> Save Pasted Cookies</button>
+                                                        <button type="button" class="btn btn-sm btn-danger" id="clearCookiesBtn"><i class="bi bi-trash"></i> Clear All Cookies</button>
+                                                    </div>
+                                                </div>
+
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-success"><i class="bi bi-save"></i> Save Configuration</button>
+                                </div>
+
                             </div>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="retentionDays" class="form-label">Retention Days</label>
-                            <input type="number" class="form-control" id="retentionDays" min="1" required>
-                        </div>
-                        <div class="col-md-6 d-flex align-items-end">
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="disablePruning">
-                                <label class="form-check-label" for="disablePruning">
-                                    Disable all pruning globally
-                                </label>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="downloadDir" class="form-label">Download Directory</label>
-                            <input type="text" class="form-control" id="downloadDir" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="maxConcurrent" class="form-label">Max Concurrent Downloads</label>
-                            <input type="number" class="form-control" id="maxConcurrent" min="1" max="10" required>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="maxLogEntries" class="form-label">Max Log Entries (per channel/video)</label>
-                            <input type="number" class="form-control" id="maxLogEntries" min="10" max="10000" required>
-                            <small class="text-muted">Each channel and individual video retains this many log lines</small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="defaultVideoFormat" class="form-label">Default Video Format</label>
-                            <select class="form-control" id="defaultVideoFormat">
-                                <option value="mp4">MP4</option>
-                                <option value="webm">WebM</option>
-                                <option value="mkv">MKV</option>
-                            </select>
-                            <small class="text-muted">Used when channel/video doesn't specify a format</small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="defaultVideoQuality" class="form-label">Default Video Quality</label>
-                            <select class="form-control" id="defaultVideoQuality">
-                                <option value="">No Global Default (per channel/video)</option>
-                                <option value="best">Best</option>
-                                <option value="1080">1080p</option>
-                                <option value="720">720p</option>
-                                <option value="480">480p</option>
-                                <option value="360">360p</option>
-                            </select>
-                            <small class="text-muted">Used when channel/video doesn't specify a quality</small>
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label"><strong>yt-dlp Update Interval</strong></label>
-                            <div class="row g-2">
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalH" min="0" placeholder="Hours" value="24">
-                                </div>
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalM" min="0" max="59" placeholder="Minutes" value="0">
-                                </div>
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="ytDlpUpdateIntervalS" min="0" max="59" placeholder="Seconds" value="0">
-                                </div>
-                                <div class="col-md-4">
-                                    <small class="text-muted">Set to 0 to disable auto-updates</small>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label"><strong>Extractor Sleep Interval</strong></label>
-                            <div class="row g-2">
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="extractorSleepIntervalH" min="0" placeholder="Hours" value="0">
-                                </div>
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="extractorSleepIntervalM" min="0" max="59" placeholder="Minutes" value="0">
-                                </div>
-                                <div class="col-md-2">
-                                    <input type="number" class="form-control" id="extractorSleepIntervalS" min="0" max="59" placeholder="Seconds" value="0">
-                                </div>
-                                <div class="col-md-4">
-                                    <small class="text-muted">Adds jitter to reduce rate limiting (0 to disable)</small>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="downloadThroughputLimit" class="form-label">Download Throughput Limit</label>
-                            <input type="text" class="form-control" id="downloadThroughputLimit" placeholder="e.g. 100K, 4.2M">
-                            <small class="text-muted">Leave blank for no limit</small>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="ytDlpCacheDir" class="form-label">yt-dlp Cache Directory</label>
-                            <input type="text" class="form-control" id="ytDlpCacheDir" placeholder="data/yt-dlp-cache">
-                        </div>
-                        <div class="col-12">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="restrictFilenames">
-                                <label class="form-check-label" for="restrictFilenames">
-                                    Restrict filenames (yt-dlp --restrict-filenames)
-                                </label>
-                            </div>
-                        </div>
-                        <div class="col-12">
-                            <label for="fileNamePattern" class="form-label">File Name Pattern</label>
-                            <input type="text" class="form-control" id="fileNamePattern" required>
-                        </div>
-                        <div class="col-12">
-                            <div class="alert alert-info">
-                                <strong>Cookies Configuration (Optional)</strong><br>
-                                <small>Use cookies to bypass YouTube's "sign in to confirm you're not a bot" errors.</small>
-                            </div>
-                        </div>
-                        <div class="col-md-6">
-                            <label for="cookiesBrowser" class="form-label">Browser Cookie Source</label>
-                            <select class="form-control" id="cookiesBrowser">
-                                <option value="">Disabled</option>
-                                <option value="firefox">Firefox</option>
-                                <option value="chrome">Chrome</option>
-                            </select>
-                            <small class="text-muted">Extract cookies from your browser</small>
-                        </div>
-                        <div class="col-12">
-                            <label for="cookiesPaste" class="form-label">Or Paste Cookies (Netscape Format)</label>
-                            <textarea class="form-control" id="cookiesPaste" rows="6" placeholder="# Netscape HTTP Cookie File&#10;# Paste your cookies here...&#10;.youtube.com	TRUE	/	TRUE	1800000000	COOKIE_NAME	cookie_value"></textarea>
-                            <small class="text-muted">Paste the contents of a Netscape format cookies file</small>
-                            <div class="mt-2">
-                                <button type="button" class="btn btn-sm btn-secondary" id="saveCookiesBtn"><i class="bi bi-save"></i> Save Pasted Cookies</button>
-                                <button type="button" class="btn btn-sm btn-danger" id="clearCookiesBtn"><i class="bi bi-trash"></i> Clear All Cookies</button>
-                            </div>
-                        </div>
-                        <div class="col-12">
-                            <button type="submit" class="btn btn-success"><i class="bi bi-save"></i> Save Configuration</button>
-                        </div>
-                    </div>
-                </form>
+                        </form>
                     </div>
                 </div>
             </div>

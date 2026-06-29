@@ -124,6 +124,63 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 	return result
 }
 
+// MigrateExpiredDownloadsToPruned moves channel DownloadedVideos entries to PrunedVideos
+// when the corresponding file no longer exists on disk and the download date is past the
+// channel's retention window. This handles installs upgraded from a version that deleted
+// files during retention cleanup without updating PrunedVideos, ensuring those videos are
+// not re-downloaded after ReconcileDownloadedVideos removes their dangling entries.
+func MigrateExpiredDownloadsToPruned(config *Config, storage *Storage) int {
+	config.RLock()
+	downloadDir := config.DownloadDir
+	defaultRetention := config.RetentionDays
+	disablePruning := config.DisablePruning
+	config.RUnlock()
+
+	if disablePruning {
+		return 0
+	}
+
+	migrated := 0
+	for _, ch := range storage.GetChannels() {
+		if ch.DisablePruning || len(ch.DownloadedVideos) == 0 {
+			continue
+		}
+		retentionDays := EffectiveRetentionDays(ch.RetentionDays, defaultRetention)
+		if retentionDays <= 0 {
+			continue
+		}
+		cutoffTime := RetentionCutoff(time.Now(), retentionDays)
+		channelDir := filepath.Join(downloadDir, sanitizeFilename(ch.Name))
+
+		var fileNames []string
+		if entries, err := os.ReadDir(channelDir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					fileNames = append(fileNames, e.Name())
+				}
+			}
+		}
+
+		for _, dv := range ch.DownloadedVideos {
+			if dv.ID == "" || dv.DownloadDate.IsZero() {
+				continue
+			}
+			if !dv.DownloadDate.Before(cutoffTime) {
+				continue // still within retention; let regular cleanup handle it
+			}
+			if hasFileContainingID(fileNames, dv.ID) {
+				continue // file still on disk; startup prune scan handles it
+			}
+			if err := storage.RemoveDownloadedVideo(ch.ID, dv.ID); err != nil {
+				log.Printf("MigrateExpiredDownloadsToPruned: failed for channel %s video %s: %v", ch.ID, dv.ID, err)
+			} else {
+				migrated++
+			}
+		}
+	}
+	return migrated
+}
+
 func existingChannelDirs(downloadDir, channelName string) []string {
 	candidates := []string{
 		filepath.Join(downloadDir, sanitizeFilename(channelName)),

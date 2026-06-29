@@ -76,6 +76,10 @@ func main() {
 		}
 	}
 
+	if migratedToPruned := MigrateExpiredDownloadsToPruned(config, storage); migratedToPruned > 0 {
+		log.Printf("Migrated %d expired downloaded video(s) to pruned list (preventing re-download)", migratedToPruned)
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

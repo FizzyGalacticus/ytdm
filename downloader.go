@@ -554,16 +554,23 @@ func (d *Downloader) ResolveChannelID(channelURL string) (string, error) {
 	return "", fmt.Errorf("could not resolve canonical channel id from url: %s", channelURL)
 }
 
-// buildFormatString constructs a yt-dlp format string based on desired quality and format
-// quality can be "best", a specific height like "720", "480", "360", or empty for defaults
-// format can be "mp4", "webm", "mkv", or empty for any format (defaults to mp4)
+// buildFormatString constructs a yt-dlp format string based on desired quality and format.
+// quality can be "best", a specific height like "720", "480", "360", or empty (falls back to
+// the global config default). format can be "mp4", "webm", "mkv", or empty (falls back to the
+// global config default).
 func (d *Downloader) buildFormatString(quality, format string) string {
 	quality = strings.TrimSpace(quality)
 	format = strings.TrimSpace(format)
 
-	// Default to mp4 if no format specified
+	if quality == "" {
+		d.config.RLock()
+		quality = strings.TrimSpace(d.config.DefaultVideoQuality)
+		d.config.RUnlock()
+	}
 	if format == "" {
-		format = "mp4"
+		d.config.RLock()
+		format = strings.TrimSpace(d.config.DefaultVideoFormat)
+		d.config.RUnlock()
 	}
 
 	if quality == "" || quality == "best" {
@@ -610,8 +617,14 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		"-f", formatStr,
 	}
 
-	// Only add merge-output-format if a format was specified
+	// --merge-output-format controls the container when muxing separate streams.
+	// Fall back to the global config default so the output format is consistent.
 	normalizedFormat := strings.TrimSpace(format)
+	if normalizedFormat == "" {
+		d.config.RLock()
+		normalizedFormat = strings.TrimSpace(d.config.DefaultVideoFormat)
+		d.config.RUnlock()
+	}
 	if normalizedFormat == "" {
 		normalizedFormat = "mp4"
 	}
@@ -1202,41 +1215,59 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 	trackedVideos := channelData.DownloadedVideos
 
-	// Then, delete old tracked files from disk
-	err := filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip files with errors
-		}
+	// First pass: collect all on-disk files grouped by video ID for each video that is
+	// past retention. Processing them as a group ensures we only move a video to the
+	// pruned list once ALL of its files (mp4, info.json, thumbnail, …) are gone — not
+	// after the first file alphabetically is deleted.
+	type pendingVideo struct {
+		tracked DownloadedVideo
+		paths   []string
+	}
+	pending := map[string]*pendingVideo{}
 
-		// Skip directories
-		if info.IsDir() {
+	walkErr := filepath.Walk(channelDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
-
 		baseName := filepath.Base(path)
 		trackedVideo, tracked := findTrackedVideo(baseName, trackedVideos)
-		if !tracked {
+		if !tracked || trackedVideo.DisablePruning {
 			return nil
 		}
-
-		if trackedVideo.DisablePruning {
+		if trackedVideo.DownloadDate.IsZero() || !trackedVideo.DownloadDate.Before(cutoffTime) {
 			return nil
 		}
-
-		shouldPruneByRetention := !trackedVideo.DownloadDate.IsZero() && trackedVideo.DownloadDate.Before(cutoffTime)
-
-		if shouldPruneByRetention {
-			if err := os.Remove(path); err != nil {
-				logScopef("channel", channelID, channelName, "Failed to prune file %s: %v", path, err)
-			} else {
-				logScopef("channel", channelID, channelName, "Pruned video file %s (reason: retention, download_date: %s)", path, trackedVideo.DownloadDate)
-			}
+		if _, ok := pending[trackedVideo.ID]; !ok {
+			pending[trackedVideo.ID] = &pendingVideo{tracked: trackedVideo}
 		}
-
+		pending[trackedVideo.ID].paths = append(pending[trackedVideo.ID].paths, path)
 		return nil
 	})
+	if walkErr != nil {
+		return walkErr
+	}
 
-	return err
+	// Second pass: delete every file for each expired video. Only move the video to the
+	// pruned list when ALL of its files were successfully removed — if any deletion fails
+	// the entry stays in DownloadedVideos so future cycles can retry.
+	for videoID, pv := range pending {
+		allDeleted := true
+		for _, path := range pv.paths {
+			if err := os.Remove(path); err != nil {
+				logScopef("channel", channelID, channelName, "Failed to prune file %s: %v", path, err)
+				allDeleted = false
+			} else {
+				logScopef("channel", channelID, channelName, "Pruned video file %s (reason: retention, download_date: %s)", path, pv.tracked.DownloadDate)
+			}
+		}
+		if allDeleted {
+			if err := storage.RemoveDownloadedVideo(channelID, videoID); err != nil {
+				logScopef("channel", channelID, channelName, "Failed to move pruned video %s to pruned list: %v", videoID, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // CleanOldVideosForVideo removes standalone video files outside retention and

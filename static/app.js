@@ -394,7 +394,7 @@ function renderVideoRow(vid) {
         ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
         : '';
     const downloadedText = downloadedCount > 0
-        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
+        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded</span>`
         : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
     const errorBadge = hasError
         ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>`

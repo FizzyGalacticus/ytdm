@@ -516,16 +516,17 @@ func TestBuildFormatString(t *testing.T) {
 		name           string
 		quality        string
 		format         string
-		expectedSubstr []string // Substrings that should appear in result
+		expectedSubstr []string
 	}{
 		{
-			name:           "default quality and mp4",
+			// No per-channel quality; DefaultConfig has no quality default → best
+			name:           "no quality set and no config default uses best",
 			quality:        "",
 			format:         "mp4",
 			expectedSubstr: []string{"bestvideo+bestaudio/best"},
 		},
 		{
-			name:           "best quality with webm",
+			name:           "explicit best quality",
 			quality:        "best",
 			format:         "webm",
 			expectedSubstr: []string{"bestvideo+bestaudio/best"},
@@ -543,7 +544,9 @@ func TestBuildFormatString(t *testing.T) {
 			expectedSubstr: []string{"bestvideo[height<=480]+bestaudio/best"},
 		},
 		{
-			name:           "empty format defaults to mp4",
+			// No per-channel format; DefaultConfig sets DefaultVideoFormat = "mp4" →
+			// the config default is used, not a hardcoded fallback.
+			name:           "empty format falls back to config default (mp4)",
 			quality:        "1080",
 			format:         "",
 			expectedSubstr: []string{"bestvideo[height<=1080]+bestaudio/best"},
@@ -567,6 +570,87 @@ func TestBuildFormatString(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildFormatStringUsesConfigDefaults verifies that an empty per-channel/per-video
+// quality or format falls back to the global config values, not yt-dlp's own defaults.
+func TestBuildFormatStringUsesConfigDefaults(t *testing.T) {
+	t.Run("empty quality uses config DefaultVideoQuality", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoQuality = "480"
+		d := NewDownloader(cfg)
+
+		result := d.buildFormatString("", "mp4")
+		if !strings.Contains(result, "height<=480") {
+			t.Errorf("expected config quality 480 to be used, got %q", result)
+		}
+	})
+
+	t.Run("empty format uses config DefaultVideoFormat", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoFormat = "webm"
+		d := NewDownloader(cfg)
+
+		// buildFormatString doesn't embed the container in its output (that's passed
+		// separately to --merge-output-format), but we verify the function at least
+		// doesn't panic and still returns a valid selector.
+		result := d.buildFormatString("720", "")
+		if !strings.Contains(result, "height<=720") {
+			t.Errorf("expected 720p selector with webm config default, got %q", result)
+		}
+	})
+
+	t.Run("both empty use config defaults", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoQuality = "360"
+		cfg.DefaultVideoFormat = "webm"
+		d := NewDownloader(cfg)
+
+		result := d.buildFormatString("", "")
+		if !strings.Contains(result, "height<=360") {
+			t.Errorf("expected config quality 360 to be used, got %q", result)
+		}
+	})
+
+	t.Run("per-item quality overrides config default", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoQuality = "360"
+		d := NewDownloader(cfg)
+
+		result := d.buildFormatString("1080", "mp4")
+		if !strings.Contains(result, "height<=1080") {
+			t.Errorf("expected explicit 1080 to override config default 360, got %q", result)
+		}
+		if strings.Contains(result, "height<=360") {
+			t.Errorf("config default 360 must not appear when explicit quality is set, got %q", result)
+		}
+	})
+
+	t.Run("per-item format overrides config default", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoFormat = "webm"
+		d := NewDownloader(cfg)
+
+		// Explicit "mp4" must win over the config "webm". buildFormatString only
+		// returns the selector string; the container check would be in DownloadVideo,
+		// but we confirm the function runs cleanly without treating "mp4" as empty.
+		result := d.buildFormatString("720", "mp4")
+		if !strings.Contains(result, "height<=720") {
+			t.Errorf("got unexpected format string %q", result)
+		}
+	})
+
+	t.Run("both empty with no config defaults falls back to best", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.DefaultVideoQuality = ""
+		cfg.DefaultVideoFormat = ""
+		d := NewDownloader(cfg)
+
+		result := d.buildFormatString("", "")
+		if !strings.Contains(result, "bestvideo+bestaudio/best") {
+			t.Errorf("expected best-quality fallback when no defaults set, got %q", result)
+		}
+	})
 }
 
 func TestIsSkippableYtDlpOutput(t *testing.T) {

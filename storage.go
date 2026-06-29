@@ -90,6 +90,7 @@ type Storage struct {
 	mu       sync.RWMutex
 	filePath string
 	data     StorageData
+	notifyCh chan struct{}
 }
 
 // NewStorage creates a new Storage instance
@@ -97,6 +98,7 @@ func NewStorage(filePath string) (*Storage, error) {
 	s := &Storage{
 		filePath: filePath,
 		data:     StorageData{Channels: []Channel{}, Videos: []Video{}},
+		notifyCh: make(chan struct{}, 16),
 	}
 
 	// Try to load existing data
@@ -134,6 +136,20 @@ func (s *Storage) save() error {
 	return os.WriteFile(s.filePath, data, 0644)
 }
 
+// notify signals that storage data has changed (non-blocking).
+func (s *Storage) notify() {
+	select {
+	case s.notifyCh <- struct{}{}:
+	default:
+	}
+}
+
+// NotifyCh returns a channel that receives a value whenever channels or videos
+// are added or removed, allowing the scheduler to react immediately.
+func (s *Storage) NotifyCh() <-chan struct{} {
+	return s.notifyCh
+}
+
 // GetChannels returns all channels
 func (s *Storage) GetChannels() []Channel {
 	s.mu.RLock()
@@ -142,6 +158,19 @@ func (s *Storage) GetChannels() []Channel {
 	channels := make([]Channel, len(s.data.Channels))
 	copy(channels, s.data.Channels)
 	return channels
+}
+
+// GetChannel returns the channel with the given ID, if it exists.
+func (s *Storage) GetChannel(id string) (Channel, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, ch := range s.data.Channels {
+		if ch.ID == id {
+			return ch, true
+		}
+	}
+	return Channel{}, false
 }
 
 // HasChannel returns true if a channel with the given ID exists
@@ -164,7 +193,11 @@ func (s *Storage) AddChannel(channel Channel) error {
 	defer s.mu.Unlock()
 
 	s.data.Channels = append(s.data.Channels, channel)
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	s.notify()
+	return nil
 }
 
 // RemoveChannel removes a channel by ID
@@ -175,7 +208,11 @@ func (s *Storage) RemoveChannel(id string) error {
 	for i, ch := range s.data.Channels {
 		if ch.ID == id {
 			s.data.Channels = append(s.data.Channels[:i], s.data.Channels[i+1:]...)
-			return s.save()
+			if err := s.save(); err != nil {
+				return err
+			}
+			s.notify()
+			return nil
 		}
 	}
 
@@ -669,6 +706,19 @@ func (s *Storage) GetVideos() []Video {
 	return videos
 }
 
+// GetVideo returns the video with the given ID, if it exists.
+func (s *Storage) GetVideo(id string) (Video, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, v := range s.data.Videos {
+		if v.ID == id {
+			return v, true
+		}
+	}
+	return Video{}, false
+}
+
 // HasVideo returns true if a video entry with the given ID exists
 func (s *Storage) HasVideo(id string) bool {
 	s.mu.RLock()
@@ -693,7 +743,11 @@ func (s *Storage) AddVideo(video Video) error {
 	}
 
 	s.data.Videos = append(s.data.Videos, video)
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	s.notify()
+	return nil
 }
 
 // RemoveVideo removes a video by ID
@@ -704,7 +758,11 @@ func (s *Storage) RemoveVideo(id string) error {
 	for i, vid := range s.data.Videos {
 		if vid.ID == id {
 			s.data.Videos = append(s.data.Videos[:i], s.data.Videos[i+1:]...)
-			return s.save()
+			if err := s.save(); err != nil {
+				return err
+			}
+			s.notify()
+			return nil
 		}
 	}
 
