@@ -463,7 +463,7 @@ const renderVideoGroup = (item, collapseId) => {
             ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
             : '';
         const downloadedText = downloadedCount > 0
-            ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${downloadedCount})</span>`
+            ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded</span>`
             : '<span class="badge bg-secondary ms-2">Not downloaded</span>';
         const errorBadge = hasError
             ? `<span class="badge bg-danger ms-2"><i class="bi bi-exclamation-circle"></i> Error</span>`
@@ -517,6 +517,10 @@ const renderVideoGroup = (item, collapseId) => {
     const convertBtn = uploaderID
         ? `<button class="btn btn-sm btn-outline-success ms-2" onclick="convertToChannel('${safeGroupKey}')"><i class="bi bi-collection-play-fill"></i> ${channelExists ? 'Move to Channel' : 'Convert to Channel'}</button>`
         : '';
+    const totalDownloaded = videos.reduce((sum, v) => sum + (v.downloaded_videos || []).length, 0);
+    const groupDownloadedBadge = totalDownloaded > 0
+        ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> Downloaded (${totalDownloaded})</span>`
+        : '';
 
     return `
         <div class="channel-row">
@@ -528,6 +532,7 @@ const renderVideoGroup = (item, collapseId) => {
                     <strong>${escapeHtml(groupName)}</strong>
                     <span class="badge bg-dark ms-2">${videos.length} videos</span>
                     <span class="badge bg-secondary ms-2">Latest added: ${formatDate(newestDate)}</span>
+                    ${groupDownloadedBadge}
                     ${convertBtn}
                 </div>
             </div>
