@@ -704,9 +704,16 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	video.DownloadShorts = true
 
 	// If the uploader's channel is already tracked, this video belongs under
-	// that channel rather than as a standalone individual-video entry.
-	if video.UploaderID != "" && api.storage.HasChannel(video.UploaderID) {
-		api.addVideoUnderTrackedChannel(w, video, fetchedInfo)
+	// that channel rather than as a standalone individual-video entry. UploaderID
+	// alone is not reliable for this check: oEmbed and modern yt-dlp both commonly
+	// report the @handle form rather than the canonical UC... ID that tracked
+	// channels are keyed by, so resolve a canonical ID before matching.
+	canonicalChannelID, resolvedInfo := api.resolveCanonicalChannelID(video.URL, fetchedInfo, video.UploaderID)
+	if resolvedInfo != nil {
+		fetchedInfo = resolvedInfo
+	}
+	if canonicalChannelID != "" && api.storage.HasChannel(canonicalChannelID) {
+		api.addVideoUnderTrackedChannel(w, video, canonicalChannelID, fetchedInfo)
 		return
 	}
 
@@ -719,11 +726,37 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	api.sendSuccess(w, video)
 }
 
+// resolveCanonicalChannelID returns a canonical (UC...) channel ID for a video, reusing
+// already-fetched metadata when possible. oEmbed's author_url and yt-dlp's own uploader_id
+// commonly report the @handle form rather than the canonical ID that tracked channels are
+// keyed by, so a dedicated yt-dlp lookup (whose result is returned for callers to reuse,
+// e.g. for publish date) is used only when the info on hand doesn't already have one.
+func (api *APIServer) resolveCanonicalChannelID(videoURL string, info *VideoInfo, uploaderID string) (string, *VideoInfo) {
+	if info != nil && strings.HasPrefix(info.ChannelID, "UC") {
+		return info.ChannelID, nil
+	}
+	if strings.HasPrefix(uploaderID, "UC") {
+		return uploaderID, nil
+	}
+
+	downloader := NewDownloader(api.config)
+	fullInfo, err := downloader.GetVideoInfo(videoURL)
+	if err != nil {
+		return "", nil
+	}
+	if strings.HasPrefix(fullInfo.ChannelID, "UC") {
+		return fullInfo.ChannelID, fullInfo
+	}
+	if strings.HasPrefix(fullInfo.UploaderID, "UC") {
+		return fullInfo.UploaderID, fullInfo
+	}
+	return "", fullInfo
+}
+
 // addVideoUnderTrackedChannel handles a manually-added video whose uploader channel is
 // already tracked: it registers the video against that channel and downloads it using
 // the channel's quality/format settings, rather than creating a separate individual entry.
-func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video Video, fetchedInfo *VideoInfo) {
-	channelID := video.UploaderID
+func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video Video, channelID string, fetchedInfo *VideoInfo) {
 	var channelName, quality, format string
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {

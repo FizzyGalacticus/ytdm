@@ -343,6 +343,22 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 	}
 }
 
+// channelNeedsInitialBacklogScan reports whether ch has never successfully completed a
+// feed scan before, in which case discovery should use the wide cutoff-based window
+// instead of the narrower retention-based one. This is deliberately based on
+// BacklogScanComplete (stamped once, only after a scan succeeds, never reverts) rather
+// than on:
+//   - DownloadedVideos/PrunedVideos being empty: those lists can legitimately empty back
+//     out via retention trimming, and re-deriving "new" from their length would cause the
+//     wide backlog window to re-open, rediscovering videos whose pruned/dismissed record
+//     was just trimmed away.
+//   - LastChecked: it is stamped on every scan attempt, including failed ones, so using
+//     it here would let a transient RSS/yt-dlp failure on a channel's very first scan
+//     permanently burn the one-time wide-window opportunity before it ever succeeded.
+func channelNeedsInitialBacklogScan(ch Channel) bool {
+	return !ch.BacklogScanComplete
+}
+
 // checkAndQueueChannel performs one feed-check cycle for channelID: fetches new videos,
 // updates FeedVideos in storage, and sends DownloadRequests to downloadQueue.
 // Returns false only when the channel no longer exists in storage.
@@ -373,11 +389,11 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 		}
 	}
 
-	// Discovery window: for brand-new channels (no downloads and no pruned history) with a
-	// cutoff date, use the cutoff so the initial backlog is fetched. For active or
-	// previously-active channels use max(cutoff, retention) so the window stays bounded.
+	// Discovery window: for a channel that has never been scanned before, with a cutoff
+	// date set, use the cutoff so the initial backlog is fetched. For channels that have
+	// been scanned at least once, use max(cutoff, retention) so the window stays bounded.
 	var since time.Time
-	isNewChannel := len(ch.DownloadedVideos) == 0 && len(ch.PrunedVideos) == 0
+	isNewChannel := channelNeedsInitialBacklogScan(ch)
 	if isNewChannel && !ch.CutoffDate.IsZero() {
 		since = NormalizeToUTC(ch.CutoffDate).Add(-time.Second)
 	} else {
@@ -408,6 +424,14 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 	if feedErr != nil {
 		_ = storage.SetChannelError(ch.ID, feedErr.Error())
 		return true
+	}
+
+	// The feed fetch succeeded (regardless of what it found), so the one-time wide
+	// backlog window has served its purpose and should not reopen on later scans.
+	if isNewChannel {
+		if err := storage.MarkChannelBacklogScanComplete(ch.ID); err != nil {
+			logScopef("channel", ch.ID, ch.Name, "Failed to mark backlog scan complete: %v", err)
+		}
 	}
 
 	// Retroactively patch IsShort on any existing FeedVideos the RSS scan identified as shorts.

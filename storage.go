@@ -58,6 +58,12 @@ type Channel struct {
 	LastError        string            `json:"last_error,omitempty"`  // Most recent error message
 	LastErrorTime    time.Time         `json:"last_error_time,omitempty"`
 	ThumbnailURL     string            `json:"thumbnail_url,omitempty"` // Channel icon URL
+	// BacklogScanComplete is set once a feed scan has successfully fetched data at least
+	// once. Discovery uses the wide cutoff-based window only while this is false; it must
+	// not be inferred from DownloadedVideos/PrunedVideos being empty (both can legitimately
+	// empty back out via retention trimming) and must not be set on a failed scan attempt
+	// (which would burn the one-time backlog window before it ever succeeded).
+	BacklogScanComplete bool `json:"backlog_scan_complete,omitempty"`
 }
 
 // Video represents a specific YouTube video to monitor
@@ -227,6 +233,26 @@ func (s *Storage) UpdateChannelLastChecked(id string, t time.Time) error {
 	for i := range s.data.Channels {
 		if s.data.Channels[i].ID == id {
 			s.data.Channels[i].LastChecked = t
+			return s.save()
+		}
+	}
+
+	return nil
+}
+
+// MarkChannelBacklogScanComplete records that channelID has successfully fetched feed
+// data at least once, so future scans use the bounded retention window instead of the
+// wide cutoff-based backlog window. Only call this after a scan actually succeeds.
+func (s *Storage) MarkChannelBacklogScanComplete(channelID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.data.Channels {
+		if s.data.Channels[i].ID == channelID {
+			if s.data.Channels[i].BacklogScanComplete {
+				return nil
+			}
+			s.data.Channels[i].BacklogScanComplete = true
 			return s.save()
 		}
 	}

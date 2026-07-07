@@ -452,6 +452,103 @@ exit 0
 	}
 }
 
+// TestAddVideoRoutesUnderTrackedChannelWithHandleUploaderID guards against the real-world
+// bug where oEmbed/yt-dlp report the uploader as its @handle rather than the canonical
+// UC... ID that tracked channels are keyed by. In that case the request itself only knows
+// the handle-form UploaderID (as production traffic does), so addVideo must fall back to a
+// dedicated yt-dlp lookup to resolve the canonical channel ID before it can find the match.
+func TestAddVideoRoutesUnderTrackedChannelWithHandleUploaderID(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	if err != nil {
+		t.Fatalf("NewStorage() error = %v", err)
+	}
+
+	channelName := "Existing Channel"
+	channel := Channel{
+		ID:           "UCtest789",
+		Name:         channelName,
+		URL:          "https://www.youtube.com/@existingcreator",
+		VideoQuality: "720",
+		VideoFormat:  "mp4",
+	}
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	channelDir := filepath.Join(tmpDir, sanitizeFilename(channelName))
+
+	// The fake yt-dlp reports the canonical channel_id distinctly from the @handle-form
+	// uploader_id, mirroring real yt-dlp/oEmbed output for handle-based channels.
+	script := filepath.Join(tmpDir, "fake-yt-dlp.sh")
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--dump-json" ]; then
+    echo '{"id":"vidABC","title":"Some Title","uploader":"%s","uploader_id":"@existingcreator","channel_id":"UCtest789","upload_date":"20210505"}'
+    exit 0
+  fi
+done
+mkdir -p %q
+echo "dummy" > %q
+printf 'vidABC\tSome Title\n'
+exit 0
+`, channelName, channelDir, filepath.Join(channelDir, "vidABC.mp4"))
+	if err := os.WriteFile(script, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to create fake yt-dlp: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.DownloadDir = tmpDir
+	cfg.YtDlp.Path = script
+	api := &APIServer{config: cfg, storage: storage}
+
+	// Title is supplied so the primary oEmbed/yt-dlp metadata fetch is skipped (keeping the
+	// test network-free), but uploader_id is deliberately the @handle form — exactly what
+	// that metadata fetch would have produced in production — to force the canonical-ID
+	// fallback lookup in resolveCanonicalChannelID.
+	body, _ := json.Marshal(map[string]interface{}{
+		"url":         "https://www.youtube.com/watch?v=vidABC",
+		"id":          "vidABC",
+		"title":       "Some Title",
+		"uploader":    channelName,
+		"uploader_id": "@existingcreator",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/videos", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.addVideo(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("addVideo() status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// No standalone individual-video entry should be created.
+	if videos := storage.GetVideos(); len(videos) != 0 {
+		t.Fatalf("expected 0 individual video entries, got %d: %+v", len(videos), videos)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) {
+		for _, ch := range storage.GetChannels() {
+			if ch.ID != "UCtest789" {
+				continue
+			}
+			for _, dv := range ch.DownloadedVideos {
+				if dv.ID == "vidABC" {
+					found = true
+				}
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !found {
+		t.Fatalf("expected video vidABC to be marked downloaded under channel UCtest789, channels = %+v", storage.GetChannels())
+	}
+}
+
 func TestHandleDismissFeedVideo(t *testing.T) {
 	tmpDir := t.TempDir()
 	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))

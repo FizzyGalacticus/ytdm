@@ -532,6 +532,50 @@ func TestCheckAndQueueChannelReturnsFalseWhenMissing(t *testing.T) {
 	}
 }
 
+// TestChannelNeedsInitialBacklogScan guards against two regressions:
+//  1. A channel that has already completed a scan could look "new" again after its
+//     DownloadedVideos and PrunedVideos both empty out (e.g. via retention trimming),
+//     causing the wide cutoff-based backlog window to re-open and rediscover videos
+//     whose pruned/dismissed record was just trimmed away.
+//  2. A channel whose very first scan attempt failed (transient RSS/yt-dlp error) must
+//     not be treated as already-scanned just because LastChecked got stamped — that
+//     would burn the one-time wide-window opportunity before it ever succeeded.
+func TestChannelNeedsInitialBacklogScan(t *testing.T) {
+	tests := []struct {
+		name string
+		ch   Channel
+		want bool
+	}{
+		{
+			name: "never scanned",
+			ch:   Channel{},
+			want: true,
+		},
+		{
+			name: "backlog scan succeeded, still has tracked history",
+			ch:   Channel{BacklogScanComplete: true, DownloadedVideos: []DownloadedVideo{{ID: "a"}}},
+			want: false,
+		},
+		{
+			name: "backlog scan succeeded, but downloaded/pruned lists have since emptied out",
+			ch:   Channel{BacklogScanComplete: true, DownloadedVideos: nil, PrunedVideos: nil},
+			want: false,
+		},
+		{
+			name: "first scan attempt failed: LastChecked stamped but backlog scan never succeeded",
+			ch:   Channel{LastChecked: time.Now(), BacklogScanComplete: false},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := channelNeedsInitialBacklogScan(tt.ch); got != tt.want {
+				t.Errorf("channelNeedsInitialBacklogScan() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckAndQueueVideoReturnsFalseWhenMissing(t *testing.T) {
 	s := newTestStorage(t)
 	cfg := newTestConfig(t)
@@ -637,6 +681,37 @@ func TestStorageGetChannel(t *testing.T) {
 	_, ok = s.GetChannel("nonexistent")
 	if ok {
 		t.Error("GetChannel returned true for nonexistent channel")
+	}
+}
+
+func TestMarkChannelBacklogScanComplete(t *testing.T) {
+	s := newTestStorage(t)
+
+	ch := Channel{ID: "UCtest", URL: "https://yt.com/@test", Name: "Test Channel"}
+	if err := s.AddChannel(ch); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := s.GetChannel("UCtest")
+	if got.BacklogScanComplete {
+		t.Fatal("expected BacklogScanComplete to start false")
+	}
+
+	if err := s.MarkChannelBacklogScanComplete("UCtest"); err != nil {
+		t.Fatalf("MarkChannelBacklogScanComplete() error = %v", err)
+	}
+	got, _ = s.GetChannel("UCtest")
+	if !got.BacklogScanComplete {
+		t.Error("expected BacklogScanComplete = true after marking")
+	}
+
+	// Calling it again should be a harmless no-op.
+	if err := s.MarkChannelBacklogScanComplete("UCtest"); err != nil {
+		t.Fatalf("MarkChannelBacklogScanComplete() second call error = %v", err)
+	}
+
+	if err := s.MarkChannelBacklogScanComplete("nonexistent"); err != nil {
+		t.Errorf("MarkChannelBacklogScanComplete() on missing channel should not error, got %v", err)
 	}
 }
 
