@@ -243,6 +243,17 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Handle feed-video dismissal: POST /api/channels/{id}/feed-videos/{videoId}/dismiss
+	if len(parts) >= 7 && parts[4] == "feed-videos" && parts[6] == "dismiss" {
+		videoID := parts[5]
+		if r.Method == http.MethodPost {
+			api.handleDismissFeedVideo(w, r, id, videoID)
+		} else {
+			api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+		return
+	}
+
 	switch r.Method {
 	case http.MethodDelete:
 		var target *Channel
@@ -388,6 +399,41 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 	api.sendSuccess(w, map[string]string{"video_id": fv.ID, "message": "Download started"})
 }
 
+// handleDismissFeedVideo permanently dismisses a pending feed video: it is removed
+// from the channel's pending list and recorded as pruned so it is never re-downloaded
+// or re-surfaced by future RSS scans.
+func (api *APIServer) handleDismissFeedVideo(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
+	var feedVideo *FeedVideo
+	for _, ch := range api.storage.GetChannels() {
+		if ch.ID != channelID {
+			continue
+		}
+		for _, fv := range ch.FeedVideos {
+			if fv.ID == videoID {
+				v := fv
+				feedVideo = &v
+			}
+		}
+		break
+	}
+	if feedVideo == nil {
+		api.sendError(w, http.StatusNotFound, "Feed video not found")
+		return
+	}
+
+	if err := api.storage.AddPrunedVideo(channelID, videoID, feedVideo.PublishedAt); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to dismiss video: %v", err))
+		return
+	}
+	if err := api.storage.RemoveFeedVideo(channelID, videoID); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to dismiss video: %v", err))
+		return
+	}
+
+	logScopef("channel", channelID, channelID, "Feed video dismissed via API: %s", videoID)
+	api.sendSuccess(w, map[string]string{"video_id": videoID, "message": "Video dismissed"})
+}
+
 // handleConvertToChannel converts a group of individual video entries into a channel subscription.
 // The individual video files remain on disk; only the storage entries are migrated.
 func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Request) {
@@ -427,10 +473,34 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 	}
 
 	var downloadedVideos []DownloadedVideo
+	var earliestPublishDate time.Time
+	// Only inherit the no-prune flag if every video being converted has it set;
+	// a single prunable video means the channel should remain prunable.
+	disablePruning := true
+	matchedAny := false
 	for _, videoID := range req.VideoIDs {
 		if v, ok := videoMap[videoID]; ok {
-			downloadedVideos = append(downloadedVideos, v.DownloadedVideos...)
+			matchedAny = true
+			// A video's own DisablePruning flag only ever gated its whole standalone
+			// prune cycle; it was never stamped onto its DownloadedVideo records. Do
+			// that here so per-video protection survives the move into a channel,
+			// where pruning is decided per-record rather than per-video.
+			for _, dv := range v.DownloadedVideos {
+				if v.DisablePruning {
+					dv.DisablePruning = true
+				}
+				downloadedVideos = append(downloadedVideos, dv)
+				if !dv.PublishDate.IsZero() && (earliestPublishDate.IsZero() || dv.PublishDate.Before(earliestPublishDate)) {
+					earliestPublishDate = dv.PublishDate
+				}
+			}
+			if !v.DisablePruning {
+				disablePruning = false
+			}
 		}
+	}
+	if !matchedAny {
+		disablePruning = false
 	}
 
 	var channelURL string
@@ -506,16 +576,22 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 	channelDir := filepath.Join(api.config.DownloadDir, sanitizeFilename(channelName))
 	thumbnailURL := dl.GetChannelThumbnailFromInfoJSON(channelDir)
 
+	cutoffDate := earliestPublishDate
+	if cutoffDate.IsZero() {
+		cutoffDate = time.Now()
+	}
+
 	channel := Channel{
 		ID:               channelID,
 		URL:              channelURL,
 		Name:             channelName,
 		RetentionDays:    retentionDays,
+		DisablePruning:   disablePruning,
 		VideoQuality:     req.VideoQuality,
 		VideoFormat:      videoFormat,
 		ThumbnailURL:     thumbnailURL,
 		DownloadedVideos: downloadedVideos,
-		CutoffDate:       time.Now(),
+		CutoffDate:       cutoffDate,
 	}
 
 	if err := api.storage.AddChannel(channel); err != nil {
@@ -573,10 +649,12 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch video title/uploader via oEmbed first, then fall back to yt-dlp.
+	var fetchedInfo *VideoInfo
 	if video.Title == "" {
 		downloader := NewDownloader(api.config)
 
 		if liteInfo, liteErr := downloader.GetVideoInfoLite(video.URL); liteErr == nil {
+			fetchedInfo = liteInfo
 			video.Title = strings.TrimSpace(liteInfo.Title)
 			if video.ID == "" && strings.TrimSpace(liteInfo.ID) != "" {
 				video.ID = strings.TrimSpace(liteInfo.ID)
@@ -593,6 +671,7 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 				api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Failed to fetch video info: %v", err))
 				return
 			}
+			fetchedInfo = info
 			video.Title = strings.TrimSpace(info.Title)
 			if video.ID == "" || video.ID == extractIDFromURL(video.URL) {
 				video.ID = strings.TrimSpace(info.ID) // Use the more reliable ID from yt-dlp
@@ -624,6 +703,13 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 	// Explicit single-video requests should not be blocked by shorts filtering.
 	video.DownloadShorts = true
 
+	// If the uploader's channel is already tracked, this video belongs under
+	// that channel rather than as a standalone individual-video entry.
+	if video.UploaderID != "" && api.storage.HasChannel(video.UploaderID) {
+		api.addVideoUnderTrackedChannel(w, video, fetchedInfo)
+		return
+	}
+
 	if err := api.storage.AddVideo(video); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add video: %v", err))
 		return
@@ -631,6 +717,84 @@ func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
 
 	logScopef("video", video.ID, video.Title, "Video added via API: %s", video.Title)
 	api.sendSuccess(w, video)
+}
+
+// addVideoUnderTrackedChannel handles a manually-added video whose uploader channel is
+// already tracked: it registers the video against that channel and downloads it using
+// the channel's quality/format settings, rather than creating a separate individual entry.
+func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video Video, fetchedInfo *VideoInfo) {
+	channelID := video.UploaderID
+	var channelName, quality, format string
+	for _, ch := range api.storage.GetChannels() {
+		if ch.ID == channelID {
+			channelName = ch.Name
+			quality = ch.VideoQuality
+			format = ch.VideoFormat
+			break
+		}
+	}
+
+	publishTime := time.Time{}
+	if fetchedInfo != nil {
+		publishTime = fetchedInfo.PublishTime
+	}
+	if publishTime.IsZero() {
+		downloader := NewDownloader(api.config)
+		if info, err := downloader.GetVideoInfo(video.URL); err == nil {
+			publishTime = info.PublishTime
+		}
+	}
+
+	feedVideo := FeedVideo{
+		ID:          video.ID,
+		Title:       video.Title,
+		URL:         normalizeChannelVideoURL(video.ID),
+		PublishedAt: publishTime,
+		AddedAt:     time.Now().UTC(),
+	}
+
+	if err := api.storage.UpsertFeedVideo(channelID, feedVideo); err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to add video under channel: %v", err))
+		return
+	}
+
+	disablePruning := video.DisablePruning
+
+	go func() {
+		dl := NewDownloader(api.config)
+		result, err := dl.DownloadVideo(feedVideo.URL, feedVideo.ID, channelName, quality, format, true, false)
+		if err != nil {
+			logScopef("channel", channelID, channelName, "Manually added video download failed for %s: %v", feedVideo.ID, err)
+			if setErr := api.storage.SetChannelError(channelID, fmt.Sprintf("Manual add-video download of %q failed: %v", feedVideo.Title, err)); setErr != nil {
+				log.Printf("Failed to set channel error after manual add-video download failure: %v", setErr)
+			}
+			return
+		}
+		if result != nil && result.Skipped {
+			logScopef("channel", channelID, channelName, "Manually added video download skipped for %s: %s", feedVideo.ID, result.SkipReason)
+			return
+		}
+		if err := api.storage.MarkVideoAsDownloaded(channelID, feedVideo.ID, feedVideo.Title, feedVideo.PublishedAt); err != nil {
+			logScopef("channel", channelID, channelName, "Failed to mark manually added video %s as downloaded: %v", feedVideo.ID, err)
+		}
+		if disablePruning {
+			if err := api.storage.UpdateChannelDownloadedVideoPruning(channelID, feedVideo.ID, true); err != nil {
+				logScopef("channel", channelID, channelName, "Failed to set disable_pruning for manually added video %s: %v", feedVideo.ID, err)
+			}
+		}
+		if err := api.storage.RemoveFeedVideo(channelID, feedVideo.ID); err != nil {
+			logScopef("channel", channelID, channelName, "Failed to remove feed video %s after manual add-video download: %v", feedVideo.ID, err)
+		}
+		if result != nil && result.ChannelIcon != "" {
+			if err := api.storage.SetChannelThumbnailIfEmpty(channelID, result.ChannelIcon); err != nil {
+				logScopef("channel", channelID, channelName, "Failed to update thumbnail after manual add-video download: %v", err)
+			}
+		}
+		logScopef("channel", channelID, channelName, "Manually added video downloaded under channel: %s (%s)", feedVideo.ID, feedVideo.Title)
+	}()
+
+	logScopef("channel", channelID, channelName, "Video added via API under tracked channel: %s (%s)", feedVideo.ID, feedVideo.Title)
+	api.sendSuccess(w, map[string]string{"video_id": feedVideo.ID, "channel_id": channelID, "message": "Video added under existing channel"})
 }
 
 // handleVideoByID handles DELETE and PUT for a specific video

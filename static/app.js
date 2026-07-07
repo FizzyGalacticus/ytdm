@@ -170,6 +170,25 @@ const downloadFeedVideo = async (channelID, videoID) => {
     }
 };
 
+const dismissFeedVideo = async (channelID, videoID) => {
+    if (!confirm('Dismiss this video? It will be treated as pruned and never downloaded or shown again.')) return;
+    try {
+        const response = await fetch(`${API_BASE}/channels/${channelID}/feed-videos/${videoID}/dismiss`, {
+            method: 'POST',
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast('Video dismissed');
+            loadChannels();
+        } else {
+            showToast(data.message || 'Failed to dismiss video', true);
+        }
+    } catch (err) {
+        console.error('dismissFeedVideo error:', err);
+        showToast('Failed to dismiss video', true);
+    }
+};
+
 const moveToChannel = async (videoID) => {
     const vid = _currentSingletonVideos[videoID];
     if (!vid) {
@@ -307,8 +326,11 @@ async function loadChannels() {
                                         <a href="https://www.youtube.com/watch?v=${fv.id}" target="_blank" class="btn btn-outline-primary btn-sm me-1" title="Watch on YouTube">
                                             <i class="bi bi-youtube"></i>
                                         </a>
-                                        <button class="btn btn-success btn-sm" onclick="downloadFeedVideo('${ch.id}', '${fv.id}')" title="Download this video now">
+                                        <button class="btn btn-success btn-sm me-1" onclick="downloadFeedVideo('${ch.id}', '${fv.id}')" title="Download this video now">
                                             <i class="bi bi-download"></i> Download
+                                        </button>
+                                        <button class="btn btn-outline-danger btn-sm" onclick="dismissFeedVideo('${ch.id}', '${fv.id}')" title="Dismiss: treat as pruned, never download or show again">
+                                            <i class="bi bi-x-lg"></i> Dismiss
                                         </button>
                                     </div>
                                 </div>
