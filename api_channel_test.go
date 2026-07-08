@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"ytdm/storage"
 )
 
 func TestAddChannelResolvesCanonicalChannelID(t *testing.T) {
 	tmpDir := t.TempDir()
-	dataPath := filepath.Join(tmpDir, "data.json")
-	storage, err := NewStorage(dataPath)
+	dataPath := filepath.Join(tmpDir, "data.db")
+	store, err := storage.NewStorage(dataPath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -29,7 +31,7 @@ func TestAddChannelResolvesCanonicalChannelID(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.YtDlp.Path = script
 
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	payload := map[string]interface{}{
 		"url":  "https://www.youtube.com/@somehandle",
@@ -44,7 +46,7 @@ func TestAddChannelResolvesCanonicalChannelID(t *testing.T) {
 		t.Fatalf("addChannel status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}
@@ -55,24 +57,24 @@ func TestAddChannelResolvesCanonicalChannelID(t *testing.T) {
 
 func TestUpdateChannelDownloadedVideoPruning(t *testing.T) {
 	tmpDir := t.TempDir()
-	dataPath := filepath.Join(tmpDir, "data.json")
-	storage, err := NewStorage(dataPath)
+	dataPath := filepath.Join(tmpDir, "data.db")
+	store, err := storage.NewStorage(dataPath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:   "UCprunetest",
 		Name: "Prune Toggle",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "vidABC", Title: "Tracked Video"},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	api := &APIServer{config: DefaultConfig(), storage: storage}
+	api := &APIServer{config: DefaultConfig(), storage: store}
 
 	payload := map[string]bool{"disable_pruning": true}
 	body, _ := json.Marshal(payload)
@@ -84,7 +86,7 @@ func TestUpdateChannelDownloadedVideoPruning(t *testing.T) {
 		t.Fatalf("update downloaded video pruning status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 || len(channels[0].DownloadedVideos) != 1 {
 		t.Fatalf("unexpected channels/downloaded_videos shape: %+v", channels)
 	}
@@ -95,26 +97,29 @@ func TestUpdateChannelDownloadedVideoPruning(t *testing.T) {
 
 func TestConvertToChannelCreatesNew(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	// Add two individual videos from the same uploader
-	for _, v := range []Video{
+	// Add two individual videos from the same uploader. The downloaded-entry ID
+	// matches the video's own tracked ID -- the common case where yt-dlp resolves the
+	// same ID it was given (the divergent-ID case is covered separately in
+	// downloader_test.go).
+	for _, v := range []storage.Video{
 		{ID: "vid-1", Title: "Video 1", Uploader: "Test Creator", UploaderID: "UCtest123",
-			DownloadedVideos: []DownloadedVideo{{ID: "dv-1", Title: "Video 1"}}},
+			DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-1", Title: "Video 1"}}},
 		{ID: "vid-2", Title: "Video 2", Uploader: "Test Creator", UploaderID: "UCtest123",
-			DownloadedVideos: []DownloadedVideo{{ID: "dv-2", Title: "Video 2"}}},
+			DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-2", Title: "Video 2"}}},
 	} {
-		if err := storage.AddVideo(v); err != nil {
+		if err := store.AddVideo(v); err != nil {
 			t.Fatalf("AddVideo() error = %v", err)
 		}
 	}
 
 	cfg := DefaultConfig()
 	cfg.DownloadDir = tmpDir
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"uploader_name":  "Test Creator",
@@ -131,7 +136,7 @@ func TestConvertToChannelCreatesNew(t *testing.T) {
 		t.Fatalf("handleConvertToChannel() status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}
@@ -153,7 +158,7 @@ func TestConvertToChannelCreatesNew(t *testing.T) {
 	}
 
 	// Individual video entries should be removed
-	videos := storage.GetVideos()
+	videos := store.GetVideos()
 	if len(videos) != 0 {
 		t.Errorf("expected 0 individual video entries, got %d", len(videos))
 	}
@@ -161,7 +166,7 @@ func TestConvertToChannelCreatesNew(t *testing.T) {
 
 func TestConvertToChannelCutoffDateUsesEarliestPublishDate(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -169,20 +174,20 @@ func TestConvertToChannelCutoffDateUsesEarliestPublishDate(t *testing.T) {
 	earliest := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	later := time.Date(2022, 6, 15, 0, 0, 0, 0, time.UTC)
 
-	for _, v := range []Video{
+	for _, v := range []storage.Video{
 		{ID: "vid-1", Title: "Video 1", Uploader: "Test Creator", UploaderID: "UCtest123",
-			DownloadedVideos: []DownloadedVideo{{ID: "dv-1", Title: "Video 1", PublishDate: later}}},
+			DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-1", Title: "Video 1", PublishDate: later}}},
 		{ID: "vid-2", Title: "Video 2", Uploader: "Test Creator", UploaderID: "UCtest123",
-			DownloadedVideos: []DownloadedVideo{{ID: "dv-2", Title: "Video 2", PublishDate: earliest}}},
+			DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-2", Title: "Video 2", PublishDate: earliest}}},
 	} {
-		if err := storage.AddVideo(v); err != nil {
+		if err := store.AddVideo(v); err != nil {
 			t.Fatalf("AddVideo() error = %v", err)
 		}
 	}
 
 	cfg := DefaultConfig()
 	cfg.DownloadDir = tmpDir
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"uploader_name": "Test Creator",
@@ -197,7 +202,7 @@ func TestConvertToChannelCutoffDateUsesEarliestPublishDate(t *testing.T) {
 		t.Fatalf("handleConvertToChannel() status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}
@@ -207,25 +212,25 @@ func TestConvertToChannelCutoffDateUsesEarliestPublishDate(t *testing.T) {
 }
 
 func TestConvertToChannelDisablePruningRequiresAllVideos(t *testing.T) {
-	newStorageWithVideos := func(t *testing.T, videos []Video) *Storage {
+	newStorageWithVideos := func(t *testing.T, videos []storage.Video) *storage.Storage {
 		t.Helper()
-		storage, err := NewStorage(filepath.Join(t.TempDir(), "data.json"))
+		store, err := storage.NewStorage(filepath.Join(t.TempDir(), "data.db"))
 		if err != nil {
 			t.Fatalf("NewStorage() error = %v", err)
 		}
 		for _, v := range videos {
-			if err := storage.AddVideo(v); err != nil {
+			if err := store.AddVideo(v); err != nil {
 				t.Fatalf("AddVideo() error = %v", err)
 			}
 		}
-		return storage
+		return store
 	}
 
-	convert := func(t *testing.T, storage *Storage) Channel {
+	convert := func(t *testing.T, store *storage.Storage) storage.Channel {
 		t.Helper()
 		cfg := DefaultConfig()
 		cfg.DownloadDir = t.TempDir()
-		api := &APIServer{config: cfg, storage: storage}
+		api := &APIServer{config: cfg, storage: store}
 
 		body, _ := json.Marshal(map[string]interface{}{
 			"uploader_name": "Test Creator",
@@ -238,7 +243,7 @@ func TestConvertToChannelDisablePruningRequiresAllVideos(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("handleConvertToChannel() status = %d, body = %s", rec.Code, rec.Body.String())
 		}
-		channels := storage.GetChannels()
+		channels := store.GetChannels()
 		if len(channels) != 1 {
 			t.Fatalf("expected 1 channel, got %d", len(channels))
 		}
@@ -246,21 +251,21 @@ func TestConvertToChannelDisablePruningRequiresAllVideos(t *testing.T) {
 	}
 
 	t.Run("mixed no-prune flags leave channel prunable", func(t *testing.T) {
-		storage := newStorageWithVideos(t, []Video{
+		store := newStorageWithVideos(t, []storage.Video{
 			{ID: "vid-1", Title: "Video 1", Uploader: "Test Creator", UploaderID: "UCtest123", DisablePruning: true},
 			{ID: "vid-2", Title: "Video 2", Uploader: "Test Creator", UploaderID: "UCtest123", DisablePruning: false},
 		})
-		if ch := convert(t, storage); ch.DisablePruning {
+		if ch := convert(t, store); ch.DisablePruning {
 			t.Errorf("expected DisablePruning = false when not all videos are protected, got true")
 		}
 	})
 
 	t.Run("all videos no-prune yields protected channel", func(t *testing.T) {
-		storage := newStorageWithVideos(t, []Video{
+		store := newStorageWithVideos(t, []storage.Video{
 			{ID: "vid-1", Title: "Video 1", Uploader: "Test Creator", UploaderID: "UCtest123", DisablePruning: true},
 			{ID: "vid-2", Title: "Video 2", Uploader: "Test Creator", UploaderID: "UCtest123", DisablePruning: true},
 		})
-		if ch := convert(t, storage); !ch.DisablePruning {
+		if ch := convert(t, store); !ch.DisablePruning {
 			t.Errorf("expected DisablePruning = true when all videos are protected, got false")
 		}
 	})
@@ -269,29 +274,32 @@ func TestConvertToChannelDisablePruningRequiresAllVideos(t *testing.T) {
 		// vid-1 was individually protected from pruning; vid-2 was not. Even though the
 		// resulting channel is prunable overall (mixed group), vid-1's downloaded-video
 		// record must carry its own protection forward so it is never pruned.
-		storage := newStorageWithVideos(t, []Video{
+		// A standalone video's downloaded-record ID always matches its own tracked ID
+		// (the canonical identity used throughout the app), so the converted channel's
+		// DownloadedVideos entries carry the same IDs as the source videos.
+		store := newStorageWithVideos(t, []storage.Video{
 			{ID: "vid-1", Title: "Video 1", Uploader: "Test Creator", UploaderID: "UCtest123",
 				DisablePruning:   true,
-				DownloadedVideos: []DownloadedVideo{{ID: "dv-1", Title: "Video 1"}}},
+				DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-1", Title: "Video 1"}}},
 			{ID: "vid-2", Title: "Video 2", Uploader: "Test Creator", UploaderID: "UCtest123",
 				DisablePruning:   false,
-				DownloadedVideos: []DownloadedVideo{{ID: "dv-2", Title: "Video 2"}}},
+				DownloadedVideos: []storage.DownloadedVideo{{ID: "vid-2", Title: "Video 2"}}},
 		})
-		ch := convert(t, storage)
+		ch := convert(t, store)
 		if ch.DisablePruning {
 			t.Errorf("expected channel-level DisablePruning = false for a mixed group, got true")
 		}
-		var dv1, dv2 *DownloadedVideo
+		var dv1, dv2 *storage.DownloadedVideo
 		for i := range ch.DownloadedVideos {
 			switch ch.DownloadedVideos[i].ID {
-			case "dv-1":
+			case "vid-1":
 				dv1 = &ch.DownloadedVideos[i]
-			case "dv-2":
+			case "vid-2":
 				dv2 = &ch.DownloadedVideos[i]
 			}
 		}
 		if dv1 == nil || dv2 == nil {
-			t.Fatalf("expected both dv-1 and dv-2 present, got %+v", ch.DownloadedVideos)
+			t.Fatalf("expected both vid-1 and vid-2 present, got %+v", ch.DownloadedVideos)
 		}
 		if !dv1.DisablePruning {
 			t.Errorf("expected dv-1 (from a no-prune video) to carry DisablePruning = true on its own record")
@@ -304,33 +312,33 @@ func TestConvertToChannelDisablePruningRequiresAllVideos(t *testing.T) {
 
 func TestConvertToChannelMergesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
 	// Pre-existing channel with one tracked download
-	existingChannel := Channel{
+	existingChannel := storage.Channel{
 		ID:               "UCmergetest",
 		Name:             "Merge Creator",
 		URL:              "https://www.youtube.com/channel/UCmergetest",
-		DownloadedVideos: []DownloadedVideo{{ID: "existing-dv", Title: "Already There"}},
+		DownloadedVideos: []storage.DownloadedVideo{{ID: "existing-dv", Title: "Already There"}},
 	}
-	if err := storage.AddChannel(existingChannel); err != nil {
+	if err := store.AddChannel(existingChannel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
 	// Individual video entry with a new download
-	if err := storage.AddVideo(Video{
+	if err := store.AddVideo(storage.Video{
 		ID: "solo-vid", Title: "Solo", Uploader: "Merge Creator", UploaderID: "UCmergetest",
-		DownloadedVideos: []DownloadedVideo{{ID: "new-dv", Title: "New Download"}},
+		DownloadedVideos: []storage.DownloadedVideo{{ID: "solo-vid", Title: "New Download"}},
 	}); err != nil {
 		t.Fatalf("AddVideo() error = %v", err)
 	}
 
 	cfg := DefaultConfig()
 	cfg.DownloadDir = tmpDir
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"uploader_name": "Merge Creator",
@@ -346,7 +354,7 @@ func TestConvertToChannelMergesExisting(t *testing.T) {
 	}
 
 	// Still exactly one channel (no duplicate created)
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}
@@ -356,7 +364,7 @@ func TestConvertToChannelMergesExisting(t *testing.T) {
 	}
 
 	// Individual video entry should be removed
-	videos := storage.GetVideos()
+	videos := store.GetVideos()
 	if len(videos) != 0 {
 		t.Errorf("expected 0 individual video entries, got %d", len(videos))
 	}
@@ -364,20 +372,20 @@ func TestConvertToChannelMergesExisting(t *testing.T) {
 
 func TestAddVideoRoutesUnderAlreadyTrackedChannel(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
 	channelName := "Existing Channel"
-	channel := Channel{
+	channel := storage.Channel{
 		ID:           "UCtest456",
 		Name:         channelName,
 		URL:          "https://www.youtube.com/channel/UCtest456",
 		VideoQuality: "720",
 		VideoFormat:  "mp4",
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -406,7 +414,7 @@ exit 0
 	cfg := DefaultConfig()
 	cfg.DownloadDir = tmpDir
 	cfg.YtDlp.Path = script
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"url":         "https://www.youtube.com/watch?v=vidXYZ",
@@ -424,7 +432,7 @@ exit 0
 	}
 
 	// No standalone individual-video entry should be created.
-	if videos := storage.GetVideos(); len(videos) != 0 {
+	if videos := store.GetVideos(); len(videos) != 0 {
 		t.Fatalf("expected 0 individual video entries, got %d: %+v", len(videos), videos)
 	}
 
@@ -432,7 +440,7 @@ exit 0
 	deadline := time.Now().Add(5 * time.Second)
 	var found bool
 	for time.Now().Before(deadline) {
-		for _, ch := range storage.GetChannels() {
+		for _, ch := range store.GetChannels() {
 			if ch.ID != "UCtest456" {
 				continue
 			}
@@ -448,7 +456,7 @@ exit 0
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !found {
-		t.Fatalf("expected video vidXYZ to be marked downloaded under channel UCtest456, channels = %+v", storage.GetChannels())
+		t.Fatalf("expected video vidXYZ to be marked downloaded under channel UCtest456, channels = %+v", store.GetChannels())
 	}
 }
 
@@ -459,20 +467,20 @@ exit 0
 // dedicated yt-dlp lookup to resolve the canonical channel ID before it can find the match.
 func TestAddVideoRoutesUnderTrackedChannelWithHandleUploaderID(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
 	channelName := "Existing Channel"
-	channel := Channel{
+	channel := storage.Channel{
 		ID:           "UCtest789",
 		Name:         channelName,
 		URL:          "https://www.youtube.com/@existingcreator",
 		VideoQuality: "720",
 		VideoFormat:  "mp4",
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -500,7 +508,7 @@ exit 0
 	cfg := DefaultConfig()
 	cfg.DownloadDir = tmpDir
 	cfg.YtDlp.Path = script
-	api := &APIServer{config: cfg, storage: storage}
+	api := &APIServer{config: cfg, storage: store}
 
 	// Title is supplied so the primary oEmbed/yt-dlp metadata fetch is skipped (keeping the
 	// test network-free), but uploader_id is deliberately the @handle form — exactly what
@@ -522,14 +530,14 @@ exit 0
 	}
 
 	// No standalone individual-video entry should be created.
-	if videos := storage.GetVideos(); len(videos) != 0 {
+	if videos := store.GetVideos(); len(videos) != 0 {
 		t.Fatalf("expected 0 individual video entries, got %d: %+v", len(videos), videos)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	var found bool
 	for time.Now().Before(deadline) {
-		for _, ch := range storage.GetChannels() {
+		for _, ch := range store.GetChannels() {
 			if ch.ID != "UCtest789" {
 				continue
 			}
@@ -545,30 +553,30 @@ exit 0
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !found {
-		t.Fatalf("expected video vidABC to be marked downloaded under channel UCtest789, channels = %+v", storage.GetChannels())
+		t.Fatalf("expected video vidABC to be marked downloaded under channel UCtest789, channels = %+v", store.GetChannels())
 	}
 }
 
 func TestHandleDismissFeedVideo(t *testing.T) {
 	tmpDir := t.TempDir()
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
 	publishedAt := time.Date(2023, 3, 4, 0, 0, 0, 0, time.UTC)
-	channel := Channel{
+	channel := storage.Channel{
 		ID:   "UCdismiss",
 		Name: "Dismiss Channel",
-		FeedVideos: []FeedVideo{
+		FeedVideos: []storage.FeedVideo{
 			{ID: "fv-1", Title: "Pending Video", URL: "https://www.youtube.com/watch?v=fv-1", PublishedAt: publishedAt},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	api := &APIServer{config: DefaultConfig(), storage: storage}
+	api := &APIServer{config: DefaultConfig(), storage: store}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/channels/UCdismiss/feed-videos/fv-1/dismiss", nil)
 	rec := httptest.NewRecorder()
@@ -578,7 +586,7 @@ func TestHandleDismissFeedVideo(t *testing.T) {
 		t.Fatalf("handleDismissFeedVideo() status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected 1 channel, got %d", len(channels))
 	}

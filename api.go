@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"ytdm/storage"
 )
 
 //go:embed static/*
@@ -30,16 +32,16 @@ type APIResponse struct {
 // APIServer holds the server state
 type APIServer struct {
 	config  *Config
-	storage *Storage
+	storage *storage.Storage
 	server  *http.Server
 	logs    *LogBuffer
 }
 
 // StartAPIServer starts the HTTP API server
-func StartAPIServer(ctx context.Context, config *Config, storage *Storage, logs *LogBuffer) {
+func StartAPIServer(ctx context.Context, config *Config, store *storage.Storage, logs *LogBuffer) {
 	api := &APIServer{
 		config:  config,
-		storage: storage,
+		storage: store,
 		logs:    logs,
 	}
 
@@ -162,7 +164,7 @@ func (api *APIServer) getChannels(w http.ResponseWriter, r *http.Request) {
 
 // addChannel adds a new channel
 func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
-	var channel Channel
+	var channel storage.Channel
 	if err := json.NewDecoder(r.Body).Decode(&channel); err != nil {
 		api.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -256,7 +258,7 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 
 	switch r.Method {
 	case http.MethodDelete:
-		var target *Channel
+		var target *storage.Channel
 		for _, ch := range api.storage.GetChannels() {
 			if ch.ID == id {
 				c := ch
@@ -339,7 +341,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 // handleManualFeedVideoDownload triggers a manual download for a specific feed video.
 // The download runs asynchronously; a 200 response means the job was queued.
 func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
-	var targetChannel *Channel
+	var targetChannel *storage.Channel
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
 			c := ch
@@ -352,7 +354,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 		return
 	}
 
-	var feedVideo *FeedVideo
+	var feedVideo *storage.FeedVideo
 	for _, fv := range targetChannel.FeedVideos {
 		if fv.ID == videoID {
 			v := fv
@@ -403,7 +405,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 // from the channel's pending list and recorded as pruned so it is never re-downloaded
 // or re-surfaced by future RSS scans.
 func (api *APIServer) handleDismissFeedVideo(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
-	var feedVideo *FeedVideo
+	var feedVideo *storage.FeedVideo
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID != channelID {
 			continue
@@ -467,12 +469,12 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 	// Collect DownloadedVideos entries from the individual video records so the
 	// new channel does not re-download content that is already on disk.
 	allVideos := api.storage.GetVideos()
-	videoMap := make(map[string]Video, len(allVideos))
+	videoMap := make(map[string]storage.Video, len(allVideos))
 	for _, v := range allVideos {
 		videoMap[v.ID] = v
 	}
 
-	var downloadedVideos []DownloadedVideo
+	var downloadedVideos []storage.DownloadedVideo
 	var earliestPublishDate time.Time
 	// Only inherit the no-prune flag if every video being converted has it set;
 	// a single prunable video means the channel should remain prunable.
@@ -581,7 +583,7 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 		cutoffDate = time.Now()
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:               channelID,
 		URL:              channelURL,
 		Name:             channelName,
@@ -630,7 +632,7 @@ func (api *APIServer) getVideos(w http.ResponseWriter, r *http.Request) {
 
 // addVideo adds a new video
 func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
-	var video Video
+	var video storage.Video
 	if err := json.NewDecoder(r.Body).Decode(&video); err != nil {
 		api.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -756,7 +758,7 @@ func (api *APIServer) resolveCanonicalChannelID(videoURL string, info *VideoInfo
 // addVideoUnderTrackedChannel handles a manually-added video whose uploader channel is
 // already tracked: it registers the video against that channel and downloads it using
 // the channel's quality/format settings, rather than creating a separate individual entry.
-func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video Video, channelID string, fetchedInfo *VideoInfo) {
+func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video storage.Video, channelID string, fetchedInfo *VideoInfo) {
 	var channelName, quality, format string
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
@@ -778,7 +780,7 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video V
 		}
 	}
 
-	feedVideo := FeedVideo{
+	feedVideo := storage.FeedVideo{
 		ID:          video.ID,
 		Title:       video.Title,
 		URL:         normalizeChannelVideoURL(video.ID),
@@ -842,7 +844,7 @@ func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodDelete:
-		var target *Video
+		var target *storage.Video
 		for _, v := range api.storage.GetVideos() {
 			if v.ID == id {
 				vv := v

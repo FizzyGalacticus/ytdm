@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ytdm/storage"
 )
 
 func sanitizeScopeValue(v string) string {
@@ -50,7 +52,7 @@ type DownloadRequest struct {
 	PublishTime    time.Time
 
 	// Fields used when Kind == downloadKindVideo (snapshot of the Video at enqueue time)
-	VideoEntry *Video
+	VideoEntry *storage.Video
 }
 
 // downloadExecFn is the type of function the download worker calls per request.
@@ -63,14 +65,14 @@ type downloadExecFn func(ctx context.Context, req DownloadRequest)
 func runDownloadWorker(
 	ctx context.Context,
 	config *Config,
-	storage *Storage,
+	store *storage.Storage,
 	downloader *Downloader,
 	queue <-chan DownloadRequest,
 	execFn downloadExecFn,
 ) {
 	if execFn == nil {
 		execFn = func(ctx context.Context, req DownloadRequest) {
-			executeDownload(ctx, req, storage, downloader)
+			executeDownload(ctx, req, store, downloader)
 		}
 	}
 
@@ -137,17 +139,17 @@ func runDownloadWorker(
 	}
 }
 
-func executeDownload(ctx context.Context, req DownloadRequest, storage *Storage, downloader *Downloader) {
+func executeDownload(ctx context.Context, req DownloadRequest, store *storage.Storage, downloader *Downloader) {
 	switch req.Kind {
 	case downloadKindChannel:
-		executeChannelVideoDownload(ctx, req, storage, downloader)
+		executeChannelVideoDownload(ctx, req, store, downloader)
 	case downloadKindVideo:
-		executeStandaloneVideoDownload(ctx, req, storage, downloader)
+		executeStandaloneVideoDownload(ctx, req, store, downloader)
 	}
 }
 
-func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, storage *Storage, downloader *Downloader) {
-	if !storage.HasChannel(req.ChannelID) || ctx.Err() != nil {
+func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store *storage.Storage, downloader *Downloader) {
+	if !store.HasChannel(req.ChannelID) || ctx.Err() != nil {
 		return
 	}
 
@@ -156,48 +158,48 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, stora
 	result, err := downloader.DownloadVideo(req.VideoURL, req.VideoID, req.ChannelName, req.Quality, req.Format, req.DownloadShorts, true)
 	if err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Download failed for video %s (%s): %v", req.VideoID, req.VideoTitle, err)
-		_ = storage.SetChannelError(req.ChannelID, fmt.Sprintf("download failed for %s: %v", req.VideoID, err))
+		_ = store.SetChannelError(req.ChannelID, fmt.Sprintf("download failed for %s: %v", req.VideoID, err))
 		return
 	}
 
 	if result != nil && result.Skipped {
 		if result.IsShort {
 			logScopef("channel", req.ChannelID, req.ChannelName, "Filtered short video %s (%s): removing from feed", req.VideoID, req.VideoTitle)
-			_ = storage.RemoveFeedVideo(req.ChannelID, req.VideoID)
-			_ = storage.AddPrunedVideo(req.ChannelID, req.VideoID, req.PublishTime)
+			_ = store.RemoveFeedVideo(req.ChannelID, req.VideoID)
+			_ = store.AddPrunedVideo(req.ChannelID, req.VideoID, req.PublishTime)
 		} else if result.IsTooShort {
 			logScopef("channel", req.ChannelID, req.ChannelName, "Video %s (%s) is under 2 minutes: flagging for manual download only", req.VideoID, req.VideoTitle)
-			_ = storage.MarkFeedVideoManualOnly(req.ChannelID, req.VideoID)
+			_ = store.MarkFeedVideoManualOnly(req.ChannelID, req.VideoID)
 		} else {
 			logScopef("channel", req.ChannelID, req.ChannelName, "Skipped video %s (%s): %s", req.VideoID, req.VideoTitle, result.SkipReason)
 		}
 		return
 	}
 
-	if err := storage.MarkVideoAsDownloaded(req.ChannelID, req.VideoID, req.VideoTitle, req.PublishTime); err != nil {
+	if err := store.MarkVideoAsDownloaded(req.ChannelID, req.VideoID, req.VideoTitle, req.PublishTime); err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Failed to mark video as downloaded: %v", err)
 	}
-	if err := storage.RemoveFeedVideo(req.ChannelID, req.VideoID); err != nil {
+	if err := store.RemoveFeedVideo(req.ChannelID, req.VideoID); err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Failed to remove feed video after download: %v", err)
 	}
 	if result != nil && result.ChannelIcon != "" {
-		_ = storage.SetChannelThumbnailIfEmpty(req.ChannelID, result.ChannelIcon)
+		_ = store.SetChannelThumbnailIfEmpty(req.ChannelID, result.ChannelIcon)
 	}
-	_ = storage.ClearChannelError(req.ChannelID)
+	_ = store.ClearChannelError(req.ChannelID)
 	logScopef("channel", req.ChannelID, req.ChannelName, "Downloaded video %s (%s)", req.VideoID, req.VideoTitle)
 }
 
-func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, storage *Storage, downloader *Downloader) {
-	if !storage.HasVideo(req.VideoID) || ctx.Err() != nil {
+func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, store *storage.Storage, downloader *Downloader) {
+	if !store.HasVideo(req.VideoID) || ctx.Err() != nil {
 		return
 	}
 
 	// Use the snapshot from the request; fall back to a fresh storage read if absent.
-	var vid Video
+	var vid storage.Video
 	if req.VideoEntry != nil {
 		vid = *req.VideoEntry
 	} else {
-		v, ok := storage.GetVideo(req.VideoID)
+		v, ok := store.GetVideo(req.VideoID)
 		if !ok {
 			return
 		}
@@ -230,7 +232,7 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 		videoInfo, err := downloader.GetVideoInfo(vid.URL)
 		if err != nil {
 			logScopef("video", vid.ID, vid.Title, "Failed to resolve channel metadata for video %s: %v", vid.Title, err)
-			_ = storage.SetVideoError(vid.ID, err.Error())
+			_ = store.SetVideoError(vid.ID, err.Error())
 			return
 		}
 		channelName = strings.TrimSpace(videoInfo.Uploader)
@@ -244,11 +246,11 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 
 	if channelName == "" {
 		logScopef("video", vid.ID, vid.Title, "Failed to determine channel name for video %s", vid.Title)
-		_ = storage.SetVideoError(vid.ID, fmt.Sprintf("could not determine channel name for video %s", vid.Title))
+		_ = store.SetVideoError(vid.ID, fmt.Sprintf("could not determine channel name for video %s", vid.Title))
 		return
 	}
 
-	if !storage.HasVideo(vid.ID) {
+	if !store.HasVideo(vid.ID) {
 		return
 	}
 
@@ -258,7 +260,7 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 	result, err := downloader.DownloadVideo(vid.URL, precheckedVideoID, channelName, vid.VideoQuality, vid.VideoFormat, vid.DownloadShorts, false)
 	if err != nil {
 		logScopef("video", vid.ID, vid.Title, "Failed to download video %s: %v", vid.Title, err)
-		_ = storage.SetVideoError(vid.ID, err.Error())
+		_ = store.SetVideoError(vid.ID, err.Error())
 		return
 	}
 
@@ -277,7 +279,7 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 	}
 	if downloadedVideoID == "" {
 		logScopef("video", vid.ID, vid.Title, "Failed to record video %s: could not determine downloaded video ID", vid.Title)
-		_ = storage.SetVideoError(vid.ID, fmt.Sprintf("could not determine downloaded video ID for %s", vid.Title))
+		_ = store.SetVideoError(vid.ID, fmt.Sprintf("could not determine downloaded video ID for %s", vid.Title))
 		return
 	}
 
@@ -289,27 +291,27 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 		downloadedTitle = downloadedVideoID
 	}
 
-	if err := storage.MarkVideoAsDownloaded(vid.ID, downloadedVideoID, downloadedTitle, publishTime); err != nil {
+	if err := store.MarkVideoAsDownloaded(vid.ID, downloadedVideoID, downloadedTitle, publishTime); err != nil {
 		logScopef("video", vid.ID, vid.Title, "Failed to mark video %s as downloaded: %v", vid.Title, err)
-		_ = storage.SetVideoError(vid.ID, err.Error())
+		_ = store.SetVideoError(vid.ID, err.Error())
 		return
 	}
 
 	if vid.Uploader != "" || vid.UploaderID != "" {
-		if err := storage.UpdateVideoUploaderInfo(vid.ID, vid.Uploader, vid.UploaderID); err != nil {
+		if err := store.UpdateVideoUploaderInfo(vid.ID, vid.Uploader, vid.UploaderID); err != nil {
 			logScopef("video", vid.ID, vid.Title, "Failed to cache uploader info for video %s: %v", vid.Title, err)
 		}
 	}
 
-	_ = storage.ClearVideoError(vid.ID)
+	_ = store.ClearVideoError(vid.ID)
 	logScopef("video", vid.ID, vid.Title, "Finished video %s (downloaded)", vid.Title)
 }
 
 // runChannelMonitor is a long-running goroutine for a single channel.
 // It checks the feed on the configured interval and sends download requests to downloadQueue.
 // It exits when its context is cancelled or the channel is deleted from storage.
-func runChannelMonitor(ctx context.Context, channelID string, config *Config, storage *Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) {
-	ch, ok := storage.GetChannel(channelID)
+func runChannelMonitor(ctx context.Context, channelID string, config *Config, store *storage.Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) {
+	ch, ok := store.GetChannel(channelID)
 	if !ok {
 		return
 	}
@@ -317,7 +319,7 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 	defer logScopef("channel", channelID, ch.Name, "Channel monitor stopped")
 
 	// Run initial check immediately so newly-added channels are acted on right away.
-	if !checkAndQueueChannel(ctx, channelID, storage, downloader, downloadQueue) {
+	if !checkAndQueueChannel(ctx, channelID, store, downloader, downloadQueue) {
 		return
 	}
 
@@ -330,7 +332,7 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !storage.HasChannel(channelID) {
+			if !store.HasChannel(channelID) {
 				return
 			}
 			if interval := config.GetCheckInterval(); interval > 0 && interval != lastInterval {
@@ -338,7 +340,7 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 				ticker = time.NewTicker(interval)
 				lastInterval = interval
 			}
-			checkAndQueueChannel(ctx, channelID, storage, downloader, downloadQueue)
+			checkAndQueueChannel(ctx, channelID, store, downloader, downloadQueue)
 		}
 	}
 }
@@ -355,15 +357,15 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 //   - LastChecked: it is stamped on every scan attempt, including failed ones, so using
 //     it here would let a transient RSS/yt-dlp failure on a channel's very first scan
 //     permanently burn the one-time wide-window opportunity before it ever succeeded.
-func channelNeedsInitialBacklogScan(ch Channel) bool {
+func channelNeedsInitialBacklogScan(ch storage.Channel) bool {
 	return !ch.BacklogScanComplete
 }
 
 // checkAndQueueChannel performs one feed-check cycle for channelID: fetches new videos,
 // updates FeedVideos in storage, and sends DownloadRequests to downloadQueue.
 // Returns false only when the channel no longer exists in storage.
-func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) bool {
-	ch, ok := storage.GetChannel(channelID)
+func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) bool {
+	ch, ok := store.GetChannel(channelID)
 	if !ok {
 		return false
 	}
@@ -375,7 +377,7 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 		if ctx.Err() != nil {
 			return
 		}
-		if err := storage.UpdateChannelLastChecked(ch.ID, time.Now()); err != nil {
+		if err := store.UpdateChannelLastChecked(ch.ID, time.Now()); err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Failed to update channel last checked time: %v", err)
 		}
 	}()
@@ -383,7 +385,7 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 	// Lazy-populate channel thumbnail from existing info.json files if not yet set.
 	if ch.ThumbnailURL == "" {
 		if icon := downloader.GetChannelThumbnailForChannel(ch.Name); icon != "" {
-			if err := storage.SetChannelThumbnailIfEmpty(ch.ID, icon); err != nil {
+			if err := store.SetChannelThumbnailIfEmpty(ch.ID, icon); err != nil {
 				logScopef("channel", ch.ID, ch.Name, "Failed to set channel thumbnail: %v", err)
 			}
 		}
@@ -403,10 +405,10 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 		logScopef("channel", ch.ID, ch.Name, "Checking channel feed for new videos (since: none)")
 	} else {
 		logScopef("channel", ch.ID, ch.Name, "Checking channel feed for new videos (since: %s)", since.Format(time.RFC3339))
-		if err := storage.TrimPrunedVideos(ch.ID, since); err != nil {
+		if err := store.TrimPrunedVideos(ch.ID, since); err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Failed to trim pruned video list: %v", err)
 		}
-		if err := storage.PruneFeedVideos(ch.ID, since); err != nil {
+		if err := store.PruneFeedVideos(ch.ID, since); err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Failed to prune feed videos: %v", err)
 		}
 	}
@@ -422,14 +424,14 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 		allFeedVideos, feedErr = downloader.GetChannelVideos(ch.URL, since, ch.DownloadShorts)
 	}
 	if feedErr != nil {
-		_ = storage.SetChannelError(ch.ID, feedErr.Error())
+		_ = store.SetChannelError(ch.ID, feedErr.Error())
 		return true
 	}
 
 	// The feed fetch succeeded (regardless of what it found), so the one-time wide
 	// backlog window has served its purpose and should not reopen on later scans.
 	if isNewChannel {
-		if err := storage.MarkChannelBacklogScanComplete(ch.ID); err != nil {
+		if err := store.MarkChannelBacklogScanComplete(ch.ID); err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Failed to mark backlog scan complete: %v", err)
 		}
 	}
@@ -441,20 +443,20 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 			shortIDsInFeed[v.ID] = true
 		}
 	}
-	if freshCh, ok := storage.GetChannel(ch.ID); ok {
+	if freshCh, ok := store.GetChannel(ch.ID); ok {
 		for _, fv := range freshCh.FeedVideos {
 			isKnownShort := fv.IsShort || shortIDsInFeed[fv.ID]
 			if isKnownShort && !ch.DownloadShorts {
-				if err := storage.RemoveFeedVideo(ch.ID, fv.ID); err != nil {
+				if err := store.RemoveFeedVideo(ch.ID, fv.ID); err != nil {
 					logScopef("channel", ch.ID, ch.Name, "Failed to remove short feed video %s: %v", fv.ID, err)
 				}
-				if err := storage.AddPrunedVideo(ch.ID, fv.ID, fv.PublishedAt); err != nil {
+				if err := store.AddPrunedVideo(ch.ID, fv.ID, fv.PublishedAt); err != nil {
 					logScopef("channel", ch.ID, ch.Name, "Failed to prune short video %s: %v", fv.ID, err)
 				}
 			} else if shortIDsInFeed[fv.ID] && !fv.IsShort {
 				patched := fv
 				patched.IsShort = true
-				if err := storage.UpsertFeedVideo(ch.ID, patched); err != nil {
+				if err := store.UpsertFeedVideo(ch.ID, patched); err != nil {
 					logScopef("channel", ch.ID, ch.Name, "Failed to update short flag on feed video %s: %v", fv.ID, err)
 				}
 			}
@@ -476,7 +478,7 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 	var videosToDownload []VideoInfo
 	skippedCount := 0
 	for _, video := range candidates {
-		if !storage.IsVideoDownloaded(ch.ID, video.ID) {
+		if !store.IsVideoDownloaded(ch.ID, video.ID) {
 			videosToDownload = append(videosToDownload, video)
 		} else {
 			skippedCount++
@@ -484,39 +486,10 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 	}
 	logScopef("channel", ch.ID, ch.Name, "Eligibility result: %d to download, %d already tracked/skipped", len(videosToDownload), skippedCount)
 
-	// One-time migration for channels upgraded from a schema without pruned_videos.
-	// Treat videos published before the most-recent tracked download as already-pruned so
-	// we don't re-attempt content that has already been processed.
-	if ch.PrunedVideos == nil && len(videosToDownload) > 0 {
-		var latestPublish time.Time
-		for _, dv := range ch.DownloadedVideos {
-			if dv.PublishDate.After(latestPublish) {
-				latestPublish = dv.PublishDate
-			}
-		}
-		var migrateVideos []PrunedVideo
-		var fresh []VideoInfo
-		for _, video := range videosToDownload {
-			if !latestPublish.IsZero() && video.PublishTime.Before(latestPublish) {
-				migrateVideos = append(migrateVideos, PrunedVideo{ID: video.ID, PublishDate: video.PublishTime})
-				skippedCount++
-			} else {
-				fresh = append(fresh, video)
-			}
-		}
-		if len(migrateVideos) > 0 {
-			logScopef("channel", ch.ID, ch.Name, "One-time migration: marking %d previously-seen videos as pruned (pre-dates latest tracked download)", len(migrateVideos))
-		}
-		if err := storage.MigratePrunedVideos(ch.ID, migrateVideos); err != nil {
-			logScopef("channel", ch.ID, ch.Name, "Migration error: %v", err)
-		}
-		videosToDownload = fresh
-	}
-
 	// Track all newly-discovered videos in FeedVideos so they are visible in the UI
 	// regardless of whether auto-download is enabled.
 	for _, video := range videosToDownload {
-		fv := FeedVideo{
+		fv := storage.FeedVideo{
 			ID:          video.ID,
 			Title:       video.Title,
 			URL:         normalizeChannelVideoURL(video.ID),
@@ -524,20 +497,20 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 			AddedAt:     time.Now(),
 			IsShort:     video.IsShort,
 		}
-		if err := storage.UpsertFeedVideo(ch.ID, fv); err != nil {
+		if err := store.UpsertFeedVideo(ch.ID, fv); err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Failed to track feed video %s: %v", video.ID, err)
 		}
 	}
 
 	if len(videosToDownload) == 0 {
-		_ = storage.ClearChannelError(ch.ID)
-		doChannelCleanup(ctx, ch, storage, downloader)
+		_ = store.ClearChannelError(ch.ID)
+		doChannelCleanup(ctx, ch, store, downloader)
 		return true
 	}
 
 	// Build the manual-download-only set from fresh storage state.
 	manualDownloadOnly := make(map[string]bool)
-	if refreshed, ok := storage.GetChannel(ch.ID); ok {
+	if refreshed, ok := store.GetChannel(ch.ID); ok {
 		for _, fv := range refreshed.FeedVideos {
 			if fv.ManualDownloadOnly {
 				manualDownloadOnly[fv.ID] = true
@@ -547,13 +520,13 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 
 	if ch.SkipAutoDownload {
 		logScopef("channel", ch.ID, ch.Name, "Auto-download disabled: %d video(s) tracked in feed, skipping download", len(videosToDownload))
-		doChannelCleanup(ctx, ch, storage, downloader)
+		doChannelCleanup(ctx, ch, store, downloader)
 		return true
 	}
 
 	// Enqueue each eligible video for the download worker.
 	for _, video := range videosToDownload {
-		if !storage.HasChannel(ch.ID) {
+		if !store.HasChannel(ch.ID) {
 			return false
 		}
 		if manualDownloadOnly[video.ID] {
@@ -582,13 +555,13 @@ func checkAndQueueChannel(ctx context.Context, channelID string, storage *Storag
 		}
 	}
 
-	_ = storage.ClearChannelError(ch.ID)
-	doChannelCleanup(ctx, ch, storage, downloader)
+	_ = store.ClearChannelError(ch.ID)
+	doChannelCleanup(ctx, ch, store, downloader)
 	return true
 }
 
 // doChannelCleanup runs retention cleanup for a single channel.
-func doChannelCleanup(ctx context.Context, ch Channel, storage *Storage, downloader *Downloader) {
+func doChannelCleanup(ctx context.Context, ch storage.Channel, store *storage.Storage, downloader *Downloader) {
 	if ctx.Err() != nil || ch.DisablePruning || configPruningDisabled(downloader) {
 		return
 	}
@@ -596,7 +569,7 @@ func doChannelCleanup(ctx context.Context, ch Channel, storage *Storage, downloa
 	if retentionDays <= 0 {
 		return
 	}
-	if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, retentionDays, ch.CutoffDate, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(ch.Name, ch.ID, retentionDays, ch.CutoffDate, store); err != nil {
 		logScopef("channel", ch.ID, ch.Name, "Error cleaning old videos for channel %s: %v", ch.Name, err)
 	}
 }
@@ -604,12 +577,12 @@ func doChannelCleanup(ctx context.Context, ch Channel, storage *Storage, downloa
 // runVideoMonitor is a single goroutine that checks all standalone videos on every interval
 // tick and whenever a wakeup signal is received. Receiving on wakeup is how the manager
 // notifies the monitor that a new video was just added so it can be queued immediately.
-func runVideoMonitor(ctx context.Context, config *Config, storage *Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest, wakeup <-chan struct{}) {
+func runVideoMonitor(ctx context.Context, config *Config, store *storage.Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest, wakeup <-chan struct{}) {
 	log.Println("Video monitor started")
 	defer log.Println("Video monitor stopped")
 
 	// Run an initial check immediately so any existing pending videos are queued on startup.
-	checkAndQueueAllVideos(ctx, storage, downloader, downloadQueue)
+	checkAndQueueAllVideos(ctx, store, downloader, downloadQueue)
 
 	lastInterval := config.GetCheckInterval()
 	ticker := time.NewTicker(lastInterval)
@@ -620,29 +593,29 @@ func runVideoMonitor(ctx context.Context, config *Config, storage *Storage, down
 		case <-ctx.Done():
 			return
 		case <-wakeup:
-			checkAndQueueAllVideos(ctx, storage, downloader, downloadQueue)
+			checkAndQueueAllVideos(ctx, store, downloader, downloadQueue)
 		case <-ticker.C:
 			if interval := config.GetCheckInterval(); interval > 0 && interval != lastInterval {
 				ticker.Stop()
 				ticker = time.NewTicker(interval)
 				lastInterval = interval
 			}
-			checkAndQueueAllVideos(ctx, storage, downloader, downloadQueue)
+			checkAndQueueAllVideos(ctx, store, downloader, downloadQueue)
 		}
 	}
 }
 
 // checkAndQueueAllVideos iterates all standalone videos, queuing downloads for any that
 // have not yet been downloaded and running retention cleanup for those that have.
-func checkAndQueueAllVideos(ctx context.Context, storage *Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) {
+func checkAndQueueAllVideos(ctx context.Context, store *storage.Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) {
 	if ctx.Err() != nil {
 		return
 	}
-	for _, vid := range storage.GetVideos() {
+	for _, vid := range store.GetVideos() {
 		if ctx.Err() != nil {
 			return
 		}
-		checkAndQueueVideo(ctx, vid.ID, storage, downloader, downloadQueue)
+		checkAndQueueVideo(ctx, vid.ID, store, downloader, downloadQueue)
 	}
 }
 
@@ -650,8 +623,8 @@ func checkAndQueueAllVideos(ctx context.Context, storage *Storage, downloader *D
 // If not yet downloaded, it enqueues a download request.
 // If already downloaded, it runs retention cleanup.
 // Returns false only when the video no longer exists in storage (deleted or pruned).
-func checkAndQueueVideo(ctx context.Context, videoID string, storage *Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) bool {
-	vid, ok := storage.GetVideo(videoID)
+func checkAndQueueVideo(ctx context.Context, videoID string, store *storage.Storage, downloader *Downloader, downloadQueue chan<- DownloadRequest) bool {
+	vid, ok := store.GetVideo(videoID)
 	if !ok {
 		return false
 	}
@@ -664,12 +637,12 @@ func checkAndQueueVideo(ctx context.Context, videoID string, storage *Storage, d
 		if ctx.Err() != nil {
 			return
 		}
-		_ = storage.UpdateVideoLastChecked(vid.ID, time.Now())
+		_ = store.UpdateVideoLastChecked(vid.ID, time.Now())
 	}()
 
 	// Already downloaded: run retention cleanup.
 	if len(vid.DownloadedVideos) > 0 {
-		if doVideoCleanup(ctx, vid, storage, downloader) {
+		if doVideoCleanup(ctx, vid, store, downloader) {
 			return false // removed from storage; tell monitor to exit
 		}
 		return true
@@ -695,7 +668,7 @@ func checkAndQueueVideo(ctx context.Context, videoID string, storage *Storage, d
 
 // doVideoCleanup runs retention cleanup for a standalone video.
 // Returns true if the video was removed from storage (the monitor should exit).
-func doVideoCleanup(ctx context.Context, vid Video, storage *Storage, downloader *Downloader) bool {
+func doVideoCleanup(ctx context.Context, vid storage.Video, store *storage.Storage, downloader *Downloader) bool {
 	if ctx.Err() != nil || vid.DisablePruning || configPruningDisabled(downloader) {
 		return false
 	}
@@ -703,13 +676,13 @@ func doVideoCleanup(ctx context.Context, vid Video, storage *Storage, downloader
 	if retentionDays <= 0 {
 		return false
 	}
-	removed, err := downloader.CleanOldVideosForVideo(vid.Title, vid.ID, retentionDays, storage)
+	removed, err := downloader.CleanOldVideosForVideo(vid.Title, vid.ID, retentionDays, store)
 	if err != nil {
 		logScopef("video", vid.ID, vid.Title, "Error cleaning old videos for video %s: %v", vid.Title, err)
 		return false
 	}
 	if removed {
-		if err := storage.RemoveVideo(vid.ID); err != nil {
+		if err := store.RemoveVideo(vid.ID); err != nil {
 			logScopef("video", vid.ID, vid.Title, "Error removing pruned video entry %s: %v", vid.Title, err)
 			return false
 		}
@@ -721,7 +694,7 @@ func doVideoCleanup(ctx context.Context, vid Video, storage *Storage, downloader
 // RunScheduler starts the per-channel and per-video monitor goroutines and the download
 // worker. It detects channel/video additions and deletions and starts or cancels the
 // corresponding goroutines in response.
-func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
+func RunScheduler(ctx context.Context, config *Config, store *storage.Storage) {
 	downloader := NewDownloader(config)
 	log.Println("Scheduler started")
 
@@ -734,21 +707,21 @@ func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		runDownloadWorker(ctx, config, storage, downloader, downloadQueue, nil)
+		runDownloadWorker(ctx, config, store, downloader, downloadQueue, nil)
 	}()
 
 	// Single video monitor goroutine covers all standalone videos.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		runVideoMonitor(ctx, config, storage, downloader, downloadQueue, videoWakeup)
+		runVideoMonitor(ctx, config, store, downloader, downloadQueue, videoWakeup)
 	}()
 
 	type workerEntry struct{ cancel context.CancelFunc }
 	channelWorkers := map[string]workerEntry{}
 
 	syncChannelWorkers := func() {
-		channels := storage.GetChannels()
+		channels := store.GetChannels()
 
 		// Start goroutines for newly-added channels.
 		current := make(map[string]bool, len(channels))
@@ -760,7 +733,7 @@ func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 				wg.Add(1)
 				go func(id string) {
 					defer wg.Done()
-					runChannelMonitor(cctx, id, config, storage, downloader, downloadQueue)
+					runChannelMonitor(cctx, id, config, store, downloader, downloadQueue)
 				}(ch.ID)
 			}
 		}
@@ -783,7 +756,7 @@ func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 		config.RLock()
 		dir := config.DownloadDir
 		config.RUnlock()
-		if err := storage.ReconcileDownloadedVideos(dir); err != nil {
+		if err := store.ReconcileDownloadedVideos(dir, sanitizeFilename); err != nil {
 			log.Printf("Error reconciling downloaded video entries: %v", err)
 		}
 	}
@@ -806,7 +779,7 @@ func RunScheduler(ctx context.Context, config *Config, storage *Storage) {
 		case <-manageTicker.C:
 			syncChannelWorkers()
 			reconcile()
-		case <-storage.NotifyCh():
+		case <-store.NotifyCh():
 			syncChannelWorkers()
 			// Wake up the video monitor so newly-added videos are queued immediately.
 			select {

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ytdm/storage"
 )
 
 func TestVideoInfoJSONParsing(t *testing.T) {
@@ -1096,7 +1098,7 @@ func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1130,10 +1132,10 @@ func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
 		t.Fatalf("Chtimes(trackedRecent) error = %v", err)
 	}
 
-	err = storage.AddChannel(Channel{
+	err = store.AddChannel(storage.Channel{
 		ID:   "channel-1",
 		Name: channelName,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "abc123", Title: "Old tracked", DownloadDate: oldTime},
 			{ID: "def456", Title: "Recent tracked", DownloadDate: recentTime},
 		},
@@ -1142,7 +1144,7 @@ func TestCleanOldVideosForChannelOnlyRemovesTrackedFiles(t *testing.T) {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	if err := downloader.CleanOldVideosForChannel(channelName, "channel-1", 7, time.Time{}, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-1", 7, time.Time{}, store); err != nil {
 		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
 	}
 
@@ -1164,7 +1166,7 @@ func TestCleanOldVideosForChannelRespectsDownloadedVideoDisablePruning(t *testin
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1185,10 +1187,10 @@ func TestCleanOldVideosForChannelRespectsDownloadedVideoDisablePruning(t *testin
 		t.Fatalf("Chtimes(keptOld) error = %v", err)
 	}
 
-	err = storage.AddChannel(Channel{
+	err = store.AddChannel(storage.Channel{
 		ID:   "channel-keep",
 		Name: channelName,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "keep001", Title: "Keep me", DownloadDate: oldTime, DisablePruning: true},
 		},
 	})
@@ -1196,7 +1198,7 @@ func TestCleanOldVideosForChannelRespectsDownloadedVideoDisablePruning(t *testin
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	if err := downloader.CleanOldVideosForChannel(channelName, "channel-keep", 7, time.Time{}, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-keep", 7, time.Time{}, store); err != nil {
 		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
 	}
 
@@ -1212,7 +1214,7 @@ func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1245,19 +1247,31 @@ func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 		t.Fatalf("Chtimes(trackedRecent) error = %v", err)
 	}
 
-	err = storage.AddVideo(Video{
-		ID:    "video-entry-1",
+	// A standalone video can only ever have one download record (it represents that one
+	// tracked video's own download, unlike a channel which tracks many), so the
+	// old/recent cases are modeled as two separate tracked videos rather than two
+	// DownloadedVideos entries under a single one. The tracked ID doubles as the
+	// file-matching ID, so it must match what's embedded in the file names above.
+	if err := store.AddVideo(storage.Video{
+		ID:    "xyz123",
 		Title: "Tracked video entry",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "xyz123", Title: "Old tracked", DownloadDate: oldTime},
+		},
+	}); err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
+	if err := store.AddVideo(storage.Video{
+		ID:    "uvw999",
+		Title: "Recent tracked video entry",
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "uvw999", Title: "Recent tracked", DownloadDate: recentTime},
 		},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("AddVideo() error = %v", err)
 	}
 
-	removed, err := downloader.CleanOldVideosForVideo("Tracked video entry", "video-entry-1", 7, storage)
+	removed, err := downloader.CleanOldVideosForVideo("Tracked video entry", "xyz123", 7, store)
 	if err != nil {
 		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
 	}
@@ -1270,6 +1284,14 @@ func TestCleanOldVideosForVideoOnlyRemovesTrackedFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(untrackedOld); err != nil {
 		t.Fatalf("expected untracked file to remain, stat err = %v", err)
+	}
+
+	removedRecent, err := downloader.CleanOldVideosForVideo("Recent tracked video entry", "uvw999", 7, store)
+	if err != nil {
+		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
+	}
+	if removedRecent {
+		t.Fatalf("expected no removal signal for a recently-downloaded tracked video")
 	}
 	if _, err := os.Stat(trackedRecent); err != nil {
 		t.Fatalf("expected recent tracked file to remain, stat err = %v", err)
@@ -1301,10 +1323,10 @@ func TestRemoveChannelResourcesRemovesChannelDirectoryAndTrackedFiles(t *testing
 		}
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:   "UC123",
 		Name: channelName,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "abc123", Title: "Tracked"},
 		},
 	}
@@ -1345,9 +1367,9 @@ func TestRemoveVideoResourcesRemovesTrackedFiles(t *testing.T) {
 		}
 	}
 
-	v := Video{
+	v := storage.Video{
 		ID: "vid111",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "vid222", Title: "Tracked2"},
 		},
 	}
@@ -1374,7 +1396,7 @@ func TestChannelPruningUsesDownloadAgeOnly(t *testing.T) {
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1420,10 +1442,10 @@ func TestChannelPruningUsesDownloadAgeOnly(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	if err := storage.AddChannel(Channel{
+	if err := store.AddChannel(storage.Channel{
 		ID:   "channel-cutoff",
 		Name: channelName,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "vid001", Title: "Recent", DownloadDate: recentDownloadDate, PublishDate: now},
 			{ID: "vid002", Title: "Old", DownloadDate: oldDownloadDate, PublishDate: oldPublishDate},
 			{ID: "vid003", Title: "Cutoff Violation", DownloadDate: recentDownloadDate2, PublishDate: cutoffPublishDate},
@@ -1433,7 +1455,7 @@ func TestChannelPruningUsesDownloadAgeOnly(t *testing.T) {
 	}
 
 	// Run cleanup with 7-day retention and cutoff 5 days ago
-	if err := downloader.CleanOldVideosForChannel(channelName, "channel-cutoff", 7, cutoffDate, storage); err != nil {
+	if err := downloader.CleanOldVideosForChannel(channelName, "channel-cutoff", 7, cutoffDate, store); err != nil {
 		t.Fatalf("CleanOldVideosForChannel() error = %v", err)
 	}
 
@@ -1460,7 +1482,7 @@ func TestSingleEntryPruningReturnsRemovalSignal(t *testing.T) {
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1482,10 +1504,12 @@ func TestSingleEntryPruningReturnsRemovalSignal(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	if err := storage.AddVideo(Video{
-		ID:    "single-video-1",
+	// The tracked ID doubles as the file-matching ID, so it must match what's embedded
+	// in oldFile's name above.
+	if err := store.AddVideo(storage.Video{
+		ID:    "abc111",
 		Title: "Video Creator",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "abc111", Title: "Old video", DownloadDate: oldTime},
 		},
 	}); err != nil {
@@ -1493,7 +1517,7 @@ func TestSingleEntryPruningReturnsRemovalSignal(t *testing.T) {
 	}
 
 	// Call cleanup with very low retention to trigger prune
-	removed, err := downloader.CleanOldVideosForVideo("Video Creator", "single-video-1", 3, storage)
+	removed, err := downloader.CleanOldVideosForVideo("Video Creator", "abc111", 3, store)
 	if err != nil {
 		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
 	}
@@ -1516,7 +1540,7 @@ func TestSingleEntryNominalRetentionDoesNotRemove(t *testing.T) {
 	downloader := NewDownloader(config)
 
 	storagePath := filepath.Join(tmpDir, "storage.json")
-	storage, err := NewStorage(storagePath)
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
@@ -1537,10 +1561,12 @@ func TestSingleEntryNominalRetentionDoesNotRemove(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	if err := storage.AddVideo(Video{
-		ID:    "single-video-2",
+	// The tracked ID doubles as the file-matching ID, so it must match what's embedded
+	// in recentFile's name above.
+	if err := store.AddVideo(storage.Video{
+		ID:    "xyz123",
 		Title: "Creator",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "xyz123", Title: "Recent", DownloadDate: recentTime},
 		},
 	}); err != nil {
@@ -1548,7 +1574,7 @@ func TestSingleEntryNominalRetentionDoesNotRemove(t *testing.T) {
 	}
 
 	// Call cleanup with 7-day retention – file is only 2 days old
-	removed, err := downloader.CleanOldVideosForVideo("Creator", "single-video-2", 7, storage)
+	removed, err := downloader.CleanOldVideosForVideo("Creator", "xyz123", 7, store)
 	if err != nil {
 		t.Fatalf("CleanOldVideosForVideo() error = %v", err)
 	}

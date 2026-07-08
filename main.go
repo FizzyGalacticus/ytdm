@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"ytdm/storage"
 )
 
 func main() {
@@ -31,17 +35,18 @@ func main() {
 	log.Printf("Configuration loaded: %+v", config)
 
 	// Initialize storage
-	storage, err := NewStorage("data/data.json")
+	store, err := storage.NewStorage("data/data.db")
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
+	defer store.Close()
 	log.Println("Storage initialized")
 
 	// Create downloader for migrations
 	downloader := NewDownloader(config)
 
 	// Run channel ID migration for any older entries
-	migratedCount, migrationErrors := storage.MigrateChannelIDs(downloader)
+	migratedCount, migrationErrors := migrateChannelIDs(store, downloader)
 	if migratedCount > 0 {
 		log.Printf("Completed channel ID migration: %d channel(s) updated", migratedCount)
 		if len(migrationErrors) > 0 {
@@ -63,7 +68,7 @@ func main() {
 		}
 	}
 
-	startupPrune := RunStartupChannelPruneScan(config, storage)
+	startupPrune := RunStartupChannelPruneScan(config, store)
 	if startupPrune.VideosPruned > 0 || startupPrune.FilesRemoved > 0 || startupPrune.FilesMoved > 0 {
 		log.Printf("Startup prune scan complete: removed %d tracked video(s), %d file(s), moved %d no-prune file(s)", startupPrune.VideosPruned, startupPrune.FilesRemoved, startupPrune.FilesMoved)
 	} else {
@@ -76,7 +81,7 @@ func main() {
 		}
 	}
 
-	if migratedToPruned := MigrateExpiredDownloadsToPruned(config, storage); migratedToPruned > 0 {
+	if migratedToPruned := MigrateExpiredDownloadsToPruned(config, store); migratedToPruned > 0 {
 		log.Printf("Migrated %d expired downloaded video(s) to pruned list (preventing re-download)", migratedToPruned)
 	}
 
@@ -99,7 +104,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		RunScheduler(ctx, config, storage)
+		RunScheduler(ctx, config, store)
 	}()
 	log.Println("Scheduler started")
 
@@ -107,7 +112,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		StartAPIServer(ctx, config, storage, logBuffer)
+		StartAPIServer(ctx, config, store, logBuffer)
 	}()
 	log.Printf("API server started on port %d", config.APIPort)
 
@@ -137,4 +142,42 @@ func main() {
 	}
 
 	log.Println("YouTube Media Downloader stopped")
+}
+
+// migrateChannelIDs resolves and updates channel IDs for any channels that don't have
+// proper UC... canonical IDs. This orchestration lives in package main (rather than as a
+// storage.Storage method) because it needs *Downloader, which the storage package cannot
+// import back from.
+func migrateChannelIDs(store *storage.Storage, downloader *Downloader) (migratedCount int, errors []string) {
+	var toMigrate []storage.Channel
+	for _, ch := range store.GetChannels() {
+		if !strings.HasPrefix(ch.ID, "UC") {
+			toMigrate = append(toMigrate, ch)
+		}
+	}
+	if len(toMigrate) == 0 {
+		return 0, nil
+	}
+
+	log.Printf("Found %d channel(s) needing ID migration", len(toMigrate))
+
+	for _, channel := range toMigrate {
+		newID, err := downloader.ResolveChannelID(channel.URL)
+		if err != nil {
+			errMsg := fmt.Sprintf("Failed to resolve channel ID for %s (%s): %v", channel.Name, channel.URL, err)
+			log.Printf("Migration error: %s", errMsg)
+			errors = append(errors, errMsg)
+			continue
+		}
+
+		if err := store.UpdateChannelID(channel.ID, newID); err != nil {
+			errMsg := fmt.Sprintf("Failed to update channel ID for %s: %v", channel.Name, err)
+			log.Printf("Migration error: %s", errMsg)
+			errors = append(errors, errMsg)
+			continue
+		}
+		migratedCount++
+	}
+
+	return migratedCount, errors
 }
