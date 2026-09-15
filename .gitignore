@@ -10,7 +10,9 @@ ytdm
 # Go
 .go
 vendor/
-go.sum
+# go.sum is intentionally tracked now that the module has real dependencies
+# (modernc.org/sqlite) -- it must be committed for reproducible builds (CI, Docker,
+# fresh clones).
 
 # Local environment
 .env

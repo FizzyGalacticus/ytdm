@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"ytdm/storage"
 )
 
 func TestNormalizeChannelVideoURL(t *testing.T) {
@@ -60,9 +62,9 @@ func newTestConfig(t *testing.T) *Config {
 	return cfg
 }
 
-func newTestStorage(t *testing.T) *Storage {
+func newTestStorage(t *testing.T) *storage.Storage {
 	t.Helper()
-	s, err := NewStorage(filepath.Join(t.TempDir(), "data.json"))
+	s, err := storage.NewStorage(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage: %v", err)
 	}
@@ -376,7 +378,7 @@ func TestRunVideoMonitorChecksAllVideos(t *testing.T) {
 	downloader := NewDownloader(cfg)
 	queue := make(chan DownloadRequest, 10)
 
-	videos := []Video{
+	videos := []storage.Video{
 		{ID: "v1", URL: "https://www.youtube.com/watch?v=v1", Title: "Video 1"},
 		{ID: "v2", URL: "https://www.youtube.com/watch?v=v2", Title: "Video 2"},
 		{ID: "v3", URL: "https://www.youtube.com/watch?v=v3", Title: "Video 3"},
@@ -442,7 +444,7 @@ func TestRunVideoMonitorQueuesOnWakeup(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Add a video after the monitor has already run its initial check.
-	vid := Video{ID: "lateVid", URL: "https://www.youtube.com/watch?v=lateVid", Title: "Late Video"}
+	vid := storage.Video{ID: "lateVid", URL: "https://www.youtube.com/watch?v=lateVid", Title: "Late Video"}
 	if err := s.AddVideo(vid); err != nil {
 		t.Fatal(err)
 	}
@@ -543,27 +545,27 @@ func TestCheckAndQueueChannelReturnsFalseWhenMissing(t *testing.T) {
 func TestChannelNeedsInitialBacklogScan(t *testing.T) {
 	tests := []struct {
 		name string
-		ch   Channel
+		ch   storage.Channel
 		want bool
 	}{
 		{
 			name: "never scanned",
-			ch:   Channel{},
+			ch:   storage.Channel{},
 			want: true,
 		},
 		{
 			name: "backlog scan succeeded, still has tracked history",
-			ch:   Channel{BacklogScanComplete: true, DownloadedVideos: []DownloadedVideo{{ID: "a"}}},
+			ch:   storage.Channel{BacklogScanComplete: true, DownloadedVideos: []storage.DownloadedVideo{{ID: "a"}}},
 			want: false,
 		},
 		{
 			name: "backlog scan succeeded, but downloaded/pruned lists have since emptied out",
-			ch:   Channel{BacklogScanComplete: true, DownloadedVideos: nil, PrunedVideos: nil},
+			ch:   storage.Channel{BacklogScanComplete: true, DownloadedVideos: nil, PrunedVideos: nil},
 			want: false,
 		},
 		{
 			name: "first scan attempt failed: LastChecked stamped but backlog scan never succeeded",
-			ch:   Channel{LastChecked: time.Now(), BacklogScanComplete: false},
+			ch:   storage.Channel{LastChecked: time.Now(), BacklogScanComplete: false},
 			want: true,
 		},
 	}
@@ -596,11 +598,11 @@ func TestCheckAndQueueVideoAlreadyDownloaded(t *testing.T) {
 	downloader := NewDownloader(cfg)
 	queue := make(chan DownloadRequest, 10)
 
-	vid := Video{
+	vid := storage.Video{
 		ID:    "vidAlready",
 		URL:   "https://www.youtube.com/watch?v=vidAlready",
 		Title: "Already Downloaded",
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "vidAlready", Title: "Already Downloaded", DownloadDate: time.Now()},
 		},
 	}
@@ -628,7 +630,7 @@ func TestCheckAndQueueVideoQueuesWhenNotDownloaded(t *testing.T) {
 	downloader := NewDownloader(cfg)
 	queue := make(chan DownloadRequest, 10)
 
-	vid := Video{
+	vid := storage.Video{
 		ID:    "vidNew",
 		URL:   "https://www.youtube.com/watch?v=vidNew",
 		Title: "New Video",
@@ -665,7 +667,7 @@ func TestCheckAndQueueVideoQueuesWhenNotDownloaded(t *testing.T) {
 func TestStorageGetChannel(t *testing.T) {
 	s := newTestStorage(t)
 
-	ch := Channel{ID: "UCtest", URL: "https://yt.com/@test", Name: "Test Channel"}
+	ch := storage.Channel{ID: "UCtest", URL: "https://yt.com/@test", Name: "Test Channel"}
 	if err := s.AddChannel(ch); err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +689,7 @@ func TestStorageGetChannel(t *testing.T) {
 func TestMarkChannelBacklogScanComplete(t *testing.T) {
 	s := newTestStorage(t)
 
-	ch := Channel{ID: "UCtest", URL: "https://yt.com/@test", Name: "Test Channel"}
+	ch := storage.Channel{ID: "UCtest", URL: "https://yt.com/@test", Name: "Test Channel"}
 	if err := s.AddChannel(ch); err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +720,7 @@ func TestMarkChannelBacklogScanComplete(t *testing.T) {
 func TestStorageGetVideo(t *testing.T) {
 	s := newTestStorage(t)
 
-	vid := Video{ID: "vidTest", URL: "https://yt.com/watch?v=vidTest", Title: "Test Video"}
+	vid := storage.Video{ID: "vidTest", URL: "https://yt.com/watch?v=vidTest", Title: "Test Video"}
 	if err := s.AddVideo(vid); err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +746,7 @@ func TestStorageNotifyOnAddChannel(t *testing.T) {
 		<-s.NotifyCh()
 	}
 
-	if err := s.AddChannel(Channel{ID: "UC1", URL: "u", Name: "c"}); err != nil {
+	if err := s.AddChannel(storage.Channel{ID: "UC1", URL: "u", Name: "c"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -757,7 +759,7 @@ func TestStorageNotifyOnAddChannel(t *testing.T) {
 
 func TestStorageNotifyOnRemoveChannel(t *testing.T) {
 	s := newTestStorage(t)
-	if err := s.AddChannel(Channel{ID: "UC2", URL: "u", Name: "c"}); err != nil {
+	if err := s.AddChannel(storage.Channel{ID: "UC2", URL: "u", Name: "c"}); err != nil {
 		t.Fatal(err)
 	}
 	// Drain add notification.
@@ -783,7 +785,7 @@ func TestStorageNotifyOnAddVideo(t *testing.T) {
 		<-s.NotifyCh()
 	}
 
-	if err := s.AddVideo(Video{ID: "v1", URL: "u", Title: "t"}); err != nil {
+	if err := s.AddVideo(storage.Video{ID: "v1", URL: "u", Title: "t"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -796,7 +798,7 @@ func TestStorageNotifyOnAddVideo(t *testing.T) {
 
 func TestStorageNotifyOnRemoveVideo(t *testing.T) {
 	s := newTestStorage(t)
-	if err := s.AddVideo(Video{ID: "v2", URL: "u", Title: "t"}); err != nil {
+	if err := s.AddVideo(storage.Video{ID: "v2", URL: "u", Title: "t"}); err != nil {
 		t.Fatal(err)
 	}
 	select {

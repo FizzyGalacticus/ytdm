@@ -4,8 +4,9 @@ FROM golang:1.25-alpine AS builder
 WORKDIR /build
 
 # Copy Go source files and module files
-COPY *.go go.mod ./
+COPY *.go go.mod go.sum ./
 COPY static ./static
+COPY storage ./storage
 
 # Build static binary with embedded files
 ARG GIT_COMMIT=dev

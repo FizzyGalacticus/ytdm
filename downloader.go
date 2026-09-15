@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"ytdm/storage"
 )
 
 var jitterRand = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -66,8 +68,8 @@ type Downloader struct {
 type DownloadResult struct {
 	Downloaded  bool
 	Skipped     bool
-	IsShort     bool   // true when the video was identified as a YouTube Short at download time
-	IsTooShort  bool   // true when the video was skipped because its duration is under the 2-minute minimum
+	IsShort     bool // true when the video was identified as a YouTube Short at download time
+	IsTooShort  bool // true when the video was skipped because its duration is under the 2-minute minimum
 	SkipReason  string
 	VideoID     string
 	VideoTitle  string
@@ -1185,7 +1187,7 @@ func extractSkipReason(output string) string {
 
 // CleanOldVideosForChannel removes channel videos whose download age exceeds
 // retention days.
-func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, cutoffDate time.Time, storage *Storage) error {
+func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, retentionDays int, cutoffDate time.Time, store *storage.Storage) error {
 	if retentionDays <= 0 {
 		return nil
 	}
@@ -1200,8 +1202,8 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	cutoffTime := RetentionCutoff(time.Now(), retentionDays)
 
 	// Get list of downloaded videos to check against
-	channels := storage.GetChannels()
-	var channelData *Channel
+	channels := store.GetChannels()
+	var channelData *storage.Channel
 	for _, ch := range channels {
 		if ch.ID == channelID {
 			channelData = &ch
@@ -1220,7 +1222,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 	// pruned list once ALL of its files (mp4, info.json, thumbnail, …) are gone — not
 	// after the first file alphabetically is deleted.
 	type pendingVideo struct {
-		tracked DownloadedVideo
+		tracked storage.DownloadedVideo
 		paths   []string
 	}
 	pending := map[string]*pendingVideo{}
@@ -1261,7 +1263,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 			}
 		}
 		if allDeleted {
-			if err := storage.RemoveDownloadedVideo(channelID, videoID); err != nil {
+			if err := store.RemoveDownloadedVideo(channelID, videoID); err != nil {
 				logScopef("channel", channelID, channelName, "Failed to move pruned video %s to pruned list: %v", videoID, err)
 			}
 		}
@@ -1272,7 +1274,7 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 // CleanOldVideosForVideo removes standalone video files outside retention and
 // reports whether the video entry should be removed permanently.
-func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionDays int, storage *Storage) (bool, error) {
+func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionDays int, store *storage.Storage) (bool, error) {
 	if retentionDays <= 0 {
 		return false, nil
 	}
@@ -1280,8 +1282,8 @@ func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionD
 	cutoffTime := RetentionCutoff(time.Now(), retentionDays)
 
 	// Get the video entry to check its downloaded videos
-	videos := storage.GetVideos()
-	var videoEntry *Video
+	videos := store.GetVideos()
+	var videoEntry *storage.Video
 	for i := range videos {
 		if videos[i].ID == videoID {
 			videoEntry = &videos[i]
@@ -1347,19 +1349,19 @@ func (d *Downloader) CleanOldVideosForVideo(_ string, videoID string, retentionD
 	return entryShouldBeRemoved, nil
 }
 
-func findTrackedVideo(baseName string, videos []DownloadedVideo) (DownloadedVideo, bool) {
+func findTrackedVideo(baseName string, videos []storage.DownloadedVideo) (storage.DownloadedVideo, bool) {
 	for _, vid := range videos {
 		if strings.Contains(baseName, vid.ID) {
 			return vid, true
 		}
 	}
 
-	return DownloadedVideo{}, false
+	return storage.DownloadedVideo{}, false
 }
 
 // RemoveChannelResources deletes all downloaded files/resources for a channel.
 // It removes the channel directory and any tracked files that may exist elsewhere.
-func (d *Downloader) RemoveChannelResources(channel Channel) error {
+func (d *Downloader) RemoveChannelResources(channel storage.Channel) error {
 	var firstErr error
 
 	channelDir := filepath.Join(d.config.DownloadDir, sanitizeFilename(channel.Name))
@@ -1398,7 +1400,7 @@ func (d *Downloader) RemoveChannelResources(channel Channel) error {
 }
 
 // RemoveVideoResources deletes all downloaded files/resources for an individual video entry.
-func (d *Downloader) RemoveVideoResources(video Video) error {
+func (d *Downloader) RemoveVideoResources(video storage.Video) error {
 	var firstErr error
 
 	trackedIDs := map[string]struct{}{}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"ytdm/storage"
 )
 
 func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromDownloadDate(t *testing.T) {
@@ -15,21 +17,21 @@ func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromDownloadDate(t *testi
 	config.RetentionDays = 30
 	config.DisablePruning = false
 
-	storagePath := filepath.Join(tmpDir, "data.json")
-	storage, err := NewStorage(storagePath)
+	storagePath := filepath.Join(tmpDir, "data.db")
+	store, err := storage.NewStorage(storagePath)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:            "UCchannel001",
 		Name:          "Channel One",
 		RetentionDays: 30,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "abc123", Title: "Old Video"},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -54,7 +56,7 @@ func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromDownloadDate(t *testi
 	}
 
 	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
-	result := runStartupChannelPruneScanAt(now, config, storage)
+	result := runStartupChannelPruneScanAt(now, config, store)
 
 	if result.VideosPruned != 1 {
 		t.Fatalf("expected 1 video pruned, got %d", result.VideosPruned)
@@ -70,7 +72,7 @@ func TestRunStartupChannelPruneScanAt_PrunesByRetentionFromDownloadDate(t *testi
 		t.Fatalf("expected info file removed, stat err = %v", err)
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 {
 		t.Fatalf("expected one channel, got %d", len(channels))
 	}
@@ -86,21 +88,21 @@ func TestRunStartupChannelPruneScanAt_DoesNotPruneByCutoffDate(t *testing.T) {
 	config.DownloadDir = tmpDir
 	config.RetentionDays = 3650
 
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
 	cutoff := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	channel := Channel{
+	channel := storage.Channel{
 		ID:         "UCchannel002",
 		Name:       "Channel Two",
 		CutoffDate: cutoff,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "vid999", Title: "Before Cutoff"},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -118,7 +120,7 @@ func TestRunStartupChannelPruneScanAt_DoesNotPruneByCutoffDate(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
+	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, store)
 	if result.VideosPruned != 0 {
 		t.Fatalf("expected no prune by cutoff date, got %d", result.VideosPruned)
 	}
@@ -135,20 +137,20 @@ func TestRunStartupChannelPruneScanAt_KeepsRecentFiles(t *testing.T) {
 	config.DownloadDir = tmpDir
 	config.RetentionDays = 30
 
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:            "UCchannel003",
 		Name:          "Channel Three",
 		RetentionDays: 30,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "new123", Title: "Recent Video"},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -166,7 +168,7 @@ func TestRunStartupChannelPruneScanAt_KeepsRecentFiles(t *testing.T) {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
 
-	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
+	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, store)
 	if result.VideosPruned != 0 || result.FilesRemoved != 0 {
 		t.Fatalf("expected no prune for recent file, got videos=%d files=%d", result.VideosPruned, result.FilesRemoved)
 	}
@@ -175,7 +177,7 @@ func TestRunStartupChannelPruneScanAt_KeepsRecentFiles(t *testing.T) {
 		t.Fatalf("expected recent file to remain, stat err = %v", err)
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 || len(channels[0].DownloadedVideos) != 1 {
 		t.Fatalf("expected tracked video to remain in storage")
 	}
@@ -188,20 +190,20 @@ func TestRunStartupChannelPruneScanAt_PrunesFromLegacyChannelPath(t *testing.T) 
 	config.DownloadDir = tmpDir
 	config.RetentionDays = 30
 
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:            "UClegacy001",
 		Name:          "Channel With Unicode é",
 		RetentionDays: 30,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "legacy123", Title: "Legacy Video"},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -221,7 +223,7 @@ func TestRunStartupChannelPruneScanAt_PrunesFromLegacyChannelPath(t *testing.T) 
 		t.Fatalf("Chtimes(legacy file) error = %v", err)
 	}
 
-	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
+	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, store)
 	if result.VideosPruned != 1 {
 		t.Fatalf("expected one pruned video from legacy dir, got %d", result.VideosPruned)
 	}
@@ -247,20 +249,20 @@ func TestRunStartupChannelPruneScanAt_NoPruneMovesToSanitizedLocation(t *testing
 	config.DownloadDir = tmpDir
 	config.RetentionDays = 30
 
-	storage, err := NewStorage(filepath.Join(tmpDir, "data.json"))
+	store, err := storage.NewStorage(filepath.Join(tmpDir, "data.db"))
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:            "UCnoprun001",
 		Name:          "Legacy Path Channel é",
 		RetentionDays: 30,
-		DownloadedVideos: []DownloadedVideo{
+		DownloadedVideos: []storage.DownloadedVideo{
 			{ID: "keep123", Title: "Keep Video", DisablePruning: true},
 		},
 	}
-	if err := storage.AddChannel(channel); err != nil {
+	if err := store.AddChannel(channel); err != nil {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
@@ -275,7 +277,7 @@ func TestRunStartupChannelPruneScanAt_NoPruneMovesToSanitizedLocation(t *testing
 		t.Fatalf("WriteFile(legacy no-prune file) error = %v", err)
 	}
 
-	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, storage)
+	result := runStartupChannelPruneScanAt(time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC), config, store)
 	if result.VideosPruned != 0 {
 		t.Fatalf("expected no videos pruned for DisablePruning entry, got %d", result.VideosPruned)
 	}
@@ -296,7 +298,7 @@ func TestRunStartupChannelPruneScanAt_NoPruneMovesToSanitizedLocation(t *testing
 		t.Fatalf("expected no-prune file moved to sanitized location, stat err = %v", err)
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	if len(channels) != 1 || len(channels[0].DownloadedVideos) != 1 {
 		t.Fatalf("expected no-prune tracked entry to remain in storage")
 	}

@@ -97,6 +97,43 @@ func TestStrictChannelRetentionWithoutCutoff(t *testing.T) {
 	}
 }
 
+// TestRetentionIncreaseWidensDiscoveryWindow is the root-cause proof for why pruned
+// video bookkeeping must be permanent (see storage.AddPrunedVideo). It reproduces the
+// exact reported scenario: a channel with a cutoff date one month ago and a 7-day
+// retention window, and a video published 8 days ago -- old enough to fall outside
+// today's discovery window, so it would look "safe" to forget. But if the channel's
+// retention is later raised, BuildChannelSinceTime's window widens back out to the
+// cutoff floor, and that same 8-day-old video becomes eligible for RSS discovery again.
+// If its pruned memory had been forgotten in the meantime, it would be re-downloaded.
+func TestRetentionIncreaseWidensDiscoveryWindow(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30) // "one month ago"
+	videoPublished := now.AddDate(0, 0, -8)
+
+	sinceAtSevenDayRetention := BuildChannelSinceTime(now, 7, cutoff)
+	if !videoPublished.Before(sinceAtSevenDayRetention) {
+		t.Fatalf("video from 8 days ago should be outside a 7-day discovery window, got publish=%v since=%v",
+			videoPublished, sinceAtSevenDayRetention)
+	}
+
+	// The user raises retention to keep more history -- an ordinary, supported action
+	// (channel settings are editable at any time), not a bug in itself.
+	sinceAtFortyFiveDayRetention := BuildChannelSinceTime(now, 45, cutoff)
+	if !videoPublished.After(sinceAtFortyFiveDayRetention) {
+		t.Fatalf("expected the widened window (bounded by cutoff) to now include the 8-day-old video, got publish=%v since=%v",
+			videoPublished, sinceAtFortyFiveDayRetention)
+	}
+
+	// The window's floor is the cutoff itself: no matter how large retention grows, the
+	// window never reaches further back than the channel's cutoff date, so a video
+	// published before cutoff genuinely never resurfaces regardless of future settings.
+	sinceAtHugeRetention := BuildChannelSinceTime(now, 100000, cutoff)
+	expectedFloor := cutoff.Add(-time.Second)
+	if !sinceAtHugeRetention.Equal(expectedFloor) {
+		t.Fatalf("expected cutoff to act as an absolute floor regardless of retention, got %v want %v", sinceAtHugeRetention, expectedFloor)
+	}
+}
+
 func TestParseYouTubeUploadDateUTC(t *testing.T) {
 	got, err := ParseYouTubeUploadDateUTC("20260427")
 	if err != nil {

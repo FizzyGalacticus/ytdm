@@ -189,6 +189,25 @@ const dismissFeedVideo = async (channelID, videoID) => {
     }
 };
 
+const dismissAllFeedVideos = async (channelID, count) => {
+    if (!confirm(`Dismiss all ${count} pending video(s)? They will be treated as pruned and never downloaded or shown again.`)) return;
+    try {
+        const response = await fetch(`${API_BASE}/channels/${channelID}/feed-videos/dismiss-all`, {
+            method: 'POST',
+        });
+        const data = await response.json();
+        if (data.success) {
+            showToast(data.message || 'Videos dismissed');
+            loadChannels();
+        } else {
+            showToast(data.message || 'Failed to dismiss videos', true);
+        }
+    } catch (err) {
+        console.error('dismissAllFeedVideos error:', err);
+        showToast('Failed to dismiss videos', true);
+    }
+};
+
 const moveToChannel = async (videoID) => {
     const vid = _currentSingletonVideos[videoID];
     if (!vid) {
@@ -315,7 +334,12 @@ async function loadChannels() {
 
                     const feedVideosHtml = feedVideos.length === 0 ? '' : `
                         <div class="mt-2 mb-3">
-                            <div class="small text-warning fw-bold mb-1"><i class="bi bi-hourglass-split me-1"></i>Pending Download (${feedVideos.length})</div>
+                            <div class="small text-warning fw-bold mb-1 d-flex justify-content-between align-items-center">
+                                <span><i class="bi bi-hourglass-split me-1"></i>Pending Download (${feedVideos.length})</span>
+                                <button class="btn btn-outline-danger btn-sm" onclick="dismissAllFeedVideos('${ch.id}', ${feedVideos.length})" title="Dismiss all pending videos: treat as pruned, never download or show again">
+                                    <i class="bi bi-x-lg"></i> Dismiss All
+                                </button>
+                            </div>
                             ${feedVideos.map(fv => `
                                 <div class="d-flex justify-content-between align-items-center border-bottom border-secondary py-2">
                                     <div style="flex-grow: 1;">

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ytdm/storage"
 )
 
 type StartupPruneResult struct {
@@ -18,11 +20,11 @@ type StartupPruneResult struct {
 
 // RunStartupChannelPruneScan performs a one-time channel file cleanup based on
 // tracked download dates (or file modtime fallback) before background listeners start.
-func RunStartupChannelPruneScan(config *Config, storage *Storage) StartupPruneResult {
-	return runStartupChannelPruneScanAt(time.Now(), config, storage)
+func RunStartupChannelPruneScan(config *Config, store *storage.Storage) StartupPruneResult {
+	return runStartupChannelPruneScanAt(time.Now(), config, store)
 }
 
-func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storage) StartupPruneResult {
+func runStartupChannelPruneScanAt(now time.Time, config *Config, store *storage.Storage) StartupPruneResult {
 	result := StartupPruneResult{}
 
 	config.RLock()
@@ -35,7 +37,7 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 		return result
 	}
 
-	channels := storage.GetChannels()
+	channels := store.GetChannels()
 	for _, channel := range channels {
 		if channel.DisablePruning {
 			continue
@@ -107,7 +109,7 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 			result.VideosPruned++
 			result.FilesRemoved += removedCount
 
-			if err := storage.RemoveDownloadedVideo(channel.ID, tracked.ID); err != nil {
+			if err := store.RemoveDownloadedVideo(channel.ID, tracked.ID); err != nil {
 				result.Warnings = append(result.Warnings, fmt.Sprintf("failed updating storage for %s/%s: %v", channel.ID, tracked.ID, err))
 			}
 		}
@@ -129,7 +131,7 @@ func runStartupChannelPruneScanAt(now time.Time, config *Config, storage *Storag
 // channel's retention window. This handles installs upgraded from a version that deleted
 // files during retention cleanup without updating PrunedVideos, ensuring those videos are
 // not re-downloaded after ReconcileDownloadedVideos removes their dangling entries.
-func MigrateExpiredDownloadsToPruned(config *Config, storage *Storage) int {
+func MigrateExpiredDownloadsToPruned(config *Config, store *storage.Storage) int {
 	config.RLock()
 	downloadDir := config.DownloadDir
 	defaultRetention := config.RetentionDays
@@ -141,7 +143,7 @@ func MigrateExpiredDownloadsToPruned(config *Config, storage *Storage) int {
 	}
 
 	migrated := 0
-	for _, ch := range storage.GetChannels() {
+	for _, ch := range store.GetChannels() {
 		if ch.DisablePruning || len(ch.DownloadedVideos) == 0 {
 			continue
 		}
@@ -171,7 +173,7 @@ func MigrateExpiredDownloadsToPruned(config *Config, storage *Storage) int {
 			if hasFileContainingID(fileNames, dv.ID) {
 				continue // file still on disk; startup prune scan handles it
 			}
-			if err := storage.RemoveDownloadedVideo(ch.ID, dv.ID); err != nil {
+			if err := store.RemoveDownloadedVideo(ch.ID, dv.ID); err != nil {
 				log.Printf("MigrateExpiredDownloadsToPruned: failed for channel %s video %s: %v", ch.ID, dv.ID, err)
 			} else {
 				migrated++
@@ -179,6 +181,18 @@ func MigrateExpiredDownloadsToPruned(config *Config, storage *Storage) int {
 		}
 	}
 	return migrated
+}
+
+func hasFileContainingID(fileNames []string, videoID string) bool {
+	if videoID == "" {
+		return false
+	}
+	for _, name := range fileNames {
+		if strings.Contains(name, videoID) {
+			return true
+		}
+	}
+	return false
 }
 
 func existingChannelDirs(downloadDir, channelName string) []string {
@@ -255,7 +269,7 @@ func findChannelFilesAcrossDirs(entriesByDir map[string][]os.DirEntry, videoID s
 	return matches
 }
 
-func inferTrackedDownloadDate(tracked DownloadedVideo, matchedPaths []string) (time.Time, bool) {
+func inferTrackedDownloadDate(tracked storage.DownloadedVideo, matchedPaths []string) (time.Time, bool) {
 	if !tracked.DownloadDate.IsZero() {
 		return NormalizeToUTC(tracked.DownloadDate), true
 	}
@@ -345,4 +359,3 @@ func moveMatchedFilesToSanitizedChannelDir(downloadDir, channelName, videoID str
 
 	return moved, nil
 }
-

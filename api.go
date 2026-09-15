@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"ytdm/storage"
 )
 
 //go:embed static/*
@@ -30,16 +32,16 @@ type APIResponse struct {
 // APIServer holds the server state
 type APIServer struct {
 	config  *Config
-	storage *Storage
+	storage *storage.Storage
 	server  *http.Server
 	logs    *LogBuffer
 }
 
 // StartAPIServer starts the HTTP API server
-func StartAPIServer(ctx context.Context, config *Config, storage *Storage, logs *LogBuffer) {
+func StartAPIServer(ctx context.Context, config *Config, store *storage.Storage, logs *LogBuffer) {
 	api := &APIServer{
 		config:  config,
-		storage: storage,
+		storage: store,
 		logs:    logs,
 	}
 
@@ -162,7 +164,7 @@ func (api *APIServer) getChannels(w http.ResponseWriter, r *http.Request) {
 
 // addChannel adds a new channel
 func (api *APIServer) addChannel(w http.ResponseWriter, r *http.Request) {
-	var channel Channel
+	var channel storage.Channel
 	if err := json.NewDecoder(r.Body).Decode(&channel); err != nil {
 		api.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -254,9 +256,19 @@ func (api *APIServer) handleChannelByID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Handle dismiss-all: POST /api/channels/{id}/feed-videos/dismiss-all
+	if len(parts) >= 6 && parts[4] == "feed-videos" && parts[5] == "dismiss-all" {
+		if r.Method == http.MethodPost {
+			api.handleDismissAllFeedVideos(w, r, id)
+		} else {
+			api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+		return
+	}
+
 	switch r.Method {
 	case http.MethodDelete:
-		var target *Channel
+		var target *storage.Channel
 		for _, ch := range api.storage.GetChannels() {
 			if ch.ID == id {
 				c := ch
@@ -339,7 +351,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 // handleManualFeedVideoDownload triggers a manual download for a specific feed video.
 // The download runs asynchronously; a 200 response means the job was queued.
 func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
-	var targetChannel *Channel
+	var targetChannel *storage.Channel
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
 			c := ch
@@ -352,7 +364,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 		return
 	}
 
-	var feedVideo *FeedVideo
+	var feedVideo *storage.FeedVideo
 	for _, fv := range targetChannel.FeedVideos {
 		if fv.ID == videoID {
 			v := fv
@@ -403,7 +415,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 // from the channel's pending list and recorded as pruned so it is never re-downloaded
 // or re-surfaced by future RSS scans.
 func (api *APIServer) handleDismissFeedVideo(w http.ResponseWriter, r *http.Request, channelID, videoID string) {
-	var feedVideo *FeedVideo
+	var feedVideo *storage.FeedVideo
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID != channelID {
 			continue
@@ -432,6 +444,24 @@ func (api *APIServer) handleDismissFeedVideo(w http.ResponseWriter, r *http.Requ
 
 	logScopef("channel", channelID, channelID, "Feed video dismissed via API: %s", videoID)
 	api.sendSuccess(w, map[string]string{"video_id": videoID, "message": "Video dismissed"})
+}
+
+// handleDismissAllFeedVideos permanently dismisses every pending feed video for a
+// channel in one action: each is treated as pruned so it is never re-downloaded or
+// re-surfaced by future RSS scans.
+func (api *APIServer) handleDismissAllFeedVideos(w http.ResponseWriter, r *http.Request, channelID string) {
+	count, err := api.storage.DismissAllFeedVideos(channelID)
+	if err != nil {
+		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to dismiss videos: %v", err))
+		return
+	}
+
+	logScopef("channel", channelID, channelID, "All pending feed videos dismissed via API: %d video(s)", count)
+	api.sendSuccess(w, map[string]interface{}{
+		"channel_id":      channelID,
+		"dismissed_count": count,
+		"message":         fmt.Sprintf("Dismissed %d video(s)", count),
+	})
 }
 
 // handleConvertToChannel converts a group of individual video entries into a channel subscription.
@@ -467,12 +497,19 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 	// Collect DownloadedVideos entries from the individual video records so the
 	// new channel does not re-download content that is already on disk.
 	allVideos := api.storage.GetVideos()
-	videoMap := make(map[string]Video, len(allVideos))
+	videoMap := make(map[string]storage.Video, len(allVideos))
 	for _, v := range allVideos {
 		videoMap[v.ID] = v
 	}
 
-	var downloadedVideos []DownloadedVideo
+	var downloadedVideos []storage.DownloadedVideo
+	// A video that hasn't finished downloading yet has no DownloadedVideos entry to
+	// carry over; without an explicit pending record it would just be dropped by the
+	// RemoveVideo calls below -- silently losing its tracking rather than moving it,
+	// exactly the kind of data loss "convert to channel" must never cause. It becomes a
+	// normal pending FeedVideo under the destination channel instead, so the next scan
+	// picks it up and downloads it using the channel's own settings.
+	var pendingVideos []storage.FeedVideo
 	var earliestPublishDate time.Time
 	// Only inherit the no-prune flag if every video being converted has it set;
 	// a single prunable video means the channel should remain prunable.
@@ -493,6 +530,18 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 				if !dv.PublishDate.IsZero() && (earliestPublishDate.IsZero() || dv.PublishDate.Before(earliestPublishDate)) {
 					earliestPublishDate = dv.PublishDate
 				}
+			}
+			if len(v.DownloadedVideos) == 0 {
+				url := v.URL
+				if url == "" {
+					url = normalizeChannelVideoURL(v.ID)
+				}
+				pendingVideos = append(pendingVideos, storage.FeedVideo{
+					ID:      v.ID,
+					Title:   v.Title,
+					URL:     url,
+					AddedAt: v.AddedDate,
+				})
 			}
 			if !v.DisablePruning {
 				disablePruning = false
@@ -548,7 +597,13 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 				return
 			}
 		}
-		logScopef("channel", channelID, channelName, "Merged %d pre-tracked videos into existing channel during convert-to-channel", len(downloadedVideos))
+		if len(pendingVideos) > 0 {
+			if err := api.storage.MergeChannelPendingVideos(channelID, pendingVideos); err != nil {
+				api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to merge pending videos: %v", err))
+				return
+			}
+		}
+		logScopef("channel", channelID, channelName, "Merged %d pre-tracked video(s) and %d pending video(s) into existing channel during convert-to-channel", len(downloadedVideos), len(pendingVideos))
 		for _, videoID := range req.VideoIDs {
 			if err := api.storage.RemoveVideo(videoID); err != nil {
 				log.Printf("Warning: failed to remove video entry %s during convert-to-channel merge: %v", videoID, err)
@@ -581,7 +636,7 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 		cutoffDate = time.Now()
 	}
 
-	channel := Channel{
+	channel := storage.Channel{
 		ID:               channelID,
 		URL:              channelURL,
 		Name:             channelName,
@@ -591,6 +646,7 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 		VideoFormat:      videoFormat,
 		ThumbnailURL:     thumbnailURL,
 		DownloadedVideos: downloadedVideos,
+		FeedVideos:       pendingVideos,
 		CutoffDate:       cutoffDate,
 	}
 
@@ -599,7 +655,7 @@ func (api *APIServer) handleConvertToChannel(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	logScopef("channel", channel.ID, channel.Name, "Channel created via convert-to-channel: %s (%d videos pre-tracked)", channel.Name, len(downloadedVideos))
+	logScopef("channel", channel.ID, channel.Name, "Channel created via convert-to-channel: %s (%d downloaded, %d pending video(s) pre-tracked)", channel.Name, len(downloadedVideos), len(pendingVideos))
 
 	for _, videoID := range req.VideoIDs {
 		if err := api.storage.RemoveVideo(videoID); err != nil {
@@ -630,7 +686,7 @@ func (api *APIServer) getVideos(w http.ResponseWriter, r *http.Request) {
 
 // addVideo adds a new video
 func (api *APIServer) addVideo(w http.ResponseWriter, r *http.Request) {
-	var video Video
+	var video storage.Video
 	if err := json.NewDecoder(r.Body).Decode(&video); err != nil {
 		api.sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
@@ -756,7 +812,17 @@ func (api *APIServer) resolveCanonicalChannelID(videoURL string, info *VideoInfo
 // addVideoUnderTrackedChannel handles a manually-added video whose uploader channel is
 // already tracked: it registers the video against that channel and downloads it using
 // the channel's quality/format settings, rather than creating a separate individual entry.
-func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video Video, channelID string, fetchedInfo *VideoInfo) {
+func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video storage.Video, channelID string, fetchedInfo *VideoInfo) {
+	// The video may already be tracked under this channel -- downloaded, or (just as
+	// importantly) pruned, meaning it was deliberately handled once already and must
+	// never be redownloaded (see storage.AddPrunedVideo). Re-pasting a URL the app has
+	// already seen must be a no-op, not a fresh download attempt.
+	if api.storage.IsVideoDownloaded(channelID, video.ID) {
+		logScopef("channel", channelID, channelID, "Manual add-video skipped for %s: already downloaded or pruned under this channel", video.ID)
+		api.sendSuccess(w, map[string]string{"video_id": video.ID, "channel_id": channelID, "message": "Video is already tracked under this channel"})
+		return
+	}
+
 	var channelName, quality, format string
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
@@ -778,7 +844,7 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video V
 		}
 	}
 
-	feedVideo := FeedVideo{
+	feedVideo := storage.FeedVideo{
 		ID:          video.ID,
 		Title:       video.Title,
 		URL:         normalizeChannelVideoURL(video.ID),
@@ -842,7 +908,7 @@ func (api *APIServer) handleVideoByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodDelete:
-		var target *Video
+		var target *storage.Video
 		for _, v := range api.storage.GetVideos() {
 			if v.ID == id {
 				vv := v

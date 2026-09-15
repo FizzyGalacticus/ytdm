@@ -1,23 +1,35 @@
-package main
+package storage
 
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
 
+// testSanitizeFilename mirrors package main's sanitizeFilename (filename.go) for tests
+// that need to compute a channel's on-disk directory name; the storage package cannot
+// import back from package main.
+var testSanitizeDirRe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+
+func testSanitizeFilename(name string) string {
+	result := strings.Trim(testSanitizeDirRe.ReplaceAllString(name, "_"), "_- ")
+	if result == "" {
+		return "unnamed"
+	}
+	return result
+}
+
 func TestStorageChannelOperations(t *testing.T) {
-	// Create a temporary file for testing
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Test adding a channel
 	channel := Channel{
 		ID:            "test-channel-1",
 		Name:          "Test Channel",
@@ -29,7 +41,6 @@ func TestStorageChannelOperations(t *testing.T) {
 		t.Errorf("Failed to add channel: %v", err)
 	}
 
-	// Test retrieving channels
 	channels := storage.GetChannels()
 	if len(channels) != 1 {
 		t.Errorf("Expected 1 channel, got %d", len(channels))
@@ -39,7 +50,6 @@ func TestStorageChannelOperations(t *testing.T) {
 		t.Errorf("Expected channel name 'Test Channel', got '%s'", channels[0].Name)
 	}
 
-	// Test updating last checked time
 	now := time.Now()
 	if err := storage.UpdateChannelLastChecked(channel.ID, now); err != nil {
 		t.Errorf("Failed to update last checked time: %v", err)
@@ -50,7 +60,6 @@ func TestStorageChannelOperations(t *testing.T) {
 		t.Error("Last checked time should not be zero")
 	}
 
-	// Test removing a channel
 	if err := storage.RemoveChannel(channel.ID); err != nil {
 		t.Errorf("Failed to remove channel: %v", err)
 	}
@@ -62,14 +71,13 @@ func TestStorageChannelOperations(t *testing.T) {
 }
 
 func TestStorageVideoOperations(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Test adding a video
 	video := Video{
 		ID:            "test-video-1",
 		Title:         "Test Video",
@@ -81,7 +89,6 @@ func TestStorageVideoOperations(t *testing.T) {
 		t.Errorf("Failed to add video: %v", err)
 	}
 
-	// Test retrieving videos
 	videos := storage.GetVideos()
 	if len(videos) != 1 {
 		t.Errorf("Expected 1 video, got %d", len(videos))
@@ -91,7 +98,6 @@ func TestStorageVideoOperations(t *testing.T) {
 		t.Errorf("Expected video title 'Test Video', got '%s'", videos[0].Title)
 	}
 
-	// Test removing a video
 	if err := storage.RemoveVideo(video.ID); err != nil {
 		t.Errorf("Failed to remove video: %v", err)
 	}
@@ -104,7 +110,7 @@ func TestStorageVideoOperations(t *testing.T) {
 
 func TestStorageReconcileDownloadedVideosRemovesOrphans(t *testing.T) {
 	root := t.TempDir()
-	dataFile := filepath.Join(root, "data.json")
+	dataFile := filepath.Join(root, "data.db")
 	downloadDir := filepath.Join(root, "downloads")
 
 	storage, err := NewStorage(dataFile)
@@ -125,20 +131,34 @@ func TestStorageReconcileDownloadedVideosRemovesOrphans(t *testing.T) {
 		t.Fatalf("AddChannel() error = %v", err)
 	}
 
+	// A standalone video's canonical ID (used for file-matching too) is always its own
+	// tracked ID -- unlike channel-owned videos, it can only ever have one download
+	// record, so there's no "keep this one, orphan that one" scenario within a single
+	// standalone video the way there is for a channel's DownloadedVideos list.
 	video := Video{
-		ID:    "video-1",
+		ID:    "keep-vid",
 		Title: "Tracked Video",
 		URL:   "https://youtu.be/example",
 		DownloadedVideos: []DownloadedVideo{
 			{ID: "keep-vid", Title: "Keep Individual Video", DownloadDate: time.Now()},
-			{ID: "orphan-vid", Title: "Orphan Individual Video", DownloadDate: time.Now()},
 		},
 	}
 	if err := storage.AddVideo(video); err != nil {
 		t.Fatalf("AddVideo() error = %v", err)
 	}
+	orphanVideo := Video{
+		ID:    "orphan-vid",
+		Title: "Orphan Individual Video",
+		URL:   "https://youtu.be/orphan",
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "orphan-vid", Title: "Orphan Individual Video", DownloadDate: time.Now()},
+		},
+	}
+	if err := storage.AddVideo(orphanVideo); err != nil {
+		t.Fatalf("AddVideo() error = %v", err)
+	}
 
-	channelDir := filepath.Join(downloadDir, sanitizeFilename(channel.Name))
+	channelDir := filepath.Join(downloadDir, testSanitizeFilename(channel.Name))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
@@ -155,7 +175,7 @@ func TestStorageReconcileDownloadedVideosRemovesOrphans(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	if err := storage.ReconcileDownloadedVideos(downloadDir); err != nil {
+	if err := storage.ReconcileDownloadedVideos(downloadDir, testSanitizeFilename); err != nil {
 		t.Fatalf("ReconcileDownloadedVideos() error = %v", err)
 	}
 
@@ -174,17 +194,31 @@ func TestStorageReconcileDownloadedVideosRemovesOrphans(t *testing.T) {
 	if len(videos[0].DownloadedVideos) != 1 || videos[0].DownloadedVideos[0].ID != "keep-vid" {
 		t.Fatalf("expected only keep-vid to remain, got %#v", videos[0].DownloadedVideos)
 	}
+
+	// orphan-chan's file went missing (e.g. deleted outside the app) rather than being
+	// removed by the normal retention-cleanup path, but it must still end up demoted to
+	// 'pruned' -- never hard-deleted -- or it could be rediscovered by a later RSS scan
+	// and actually get redownloaded. orphan-vid (standalone) has no pruned-memory
+	// concept and is correctly hard-deleted instead, matching RemoveVideo's semantics.
+	if !storage.IsVideoDownloaded(channel.ID, "orphan-chan") {
+		t.Error("orphan-chan should be remembered as pruned after reconcile, not forgotten")
+	}
+	if len(channels[0].PrunedVideos) != 1 || channels[0].PrunedVideos[0].ID != "orphan-chan" {
+		t.Errorf("expected orphan-chan to be demoted to pruned, got %#v", channels[0].PrunedVideos)
+	}
+	if storage.HasVideo("orphan-vid") {
+		t.Error("orphan-vid (standalone) should have been hard-deleted, not remembered")
+	}
 }
 
 func TestStorageVideoDownloadTracking(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Create a channel first (required for video download tracking)
 	channel := Channel{
 		ID:   "test-channel",
 		Name: "Test Channel",
@@ -194,31 +228,27 @@ func TestStorageVideoDownloadTracking(t *testing.T) {
 
 	videoID := "test-video-123"
 
-	// Initially should not be downloaded
 	if storage.IsVideoDownloaded(channel.ID, videoID) {
 		t.Error("Video should not be marked as downloaded initially")
 	}
 
-	// Mark as downloaded
 	if err := storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video", time.Time{}); err != nil {
 		t.Errorf("Failed to mark video as downloaded: %v", err)
 	}
 
-	// Should now be downloaded
 	if !storage.IsVideoDownloaded(channel.ID, videoID) {
 		t.Error("Video should be marked as downloaded")
 	}
 }
 
 func TestStorageErrorTracking(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add a channel
 	channel := Channel{
 		ID:   "test-channel",
 		Name: "Test Channel",
@@ -226,11 +256,9 @@ func TestStorageErrorTracking(t *testing.T) {
 	}
 	storage.AddChannel(channel)
 
-	// Set error
 	errorMsg := "Test error message"
 	storage.SetChannelError(channel.ID, errorMsg)
 
-	// Check error was set
 	channels := storage.GetChannels()
 	if len(channels) == 0 {
 		t.Fatal("Expected channel to exist")
@@ -244,7 +272,6 @@ func TestStorageErrorTracking(t *testing.T) {
 		t.Error("Error time should be set")
 	}
 
-	// Clear error
 	storage.ClearChannelError(channel.ID)
 
 	channels = storage.GetChannels()
@@ -254,9 +281,8 @@ func TestStorageErrorTracking(t *testing.T) {
 }
 
 func TestStoragePersistence(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
-	// Create storage and add data
 	storage1, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
@@ -269,8 +295,9 @@ func TestStoragePersistence(t *testing.T) {
 	}
 	storage1.AddChannel(channel)
 
-	// Save happens automatically in AddChannel, so just load from file
-	// Load storage from same file
+	// Load a second Storage instance from the same file to verify data survives
+	// across a "restart" -- a bare Exec already commits, and a fresh connection
+	// against the same WAL-mode file sees committed writes immediately.
 	storage2, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to load storage: %v", err)
@@ -284,20 +311,16 @@ func TestStoragePersistence(t *testing.T) {
 	if channels[0].Name != "Persist Test" {
 		t.Errorf("Expected persisted channel name 'Persist Test', got '%s'", channels[0].Name)
 	}
-
-	// Cleanup
-	os.Remove(tmpFile)
 }
 
 func TestStorageRemoveDownloadedVideo(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add channel
 	channel := Channel{
 		ID:   "test-channel",
 		Name: "Test Channel",
@@ -307,13 +330,11 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 
 	videoID := "test-video-456"
 
-	// Mark video as downloaded
 	storage.MarkVideoAsDownloaded(channel.ID, videoID, "Test Video", time.Time{})
 	if !storage.IsVideoDownloaded(channel.ID, videoID) {
 		t.Fatal("Video should be marked as downloaded")
 	}
 
-	// Remove the downloaded video
 	err = storage.RemoveDownloadedVideo(channel.ID, videoID)
 	if err != nil {
 		t.Errorf("Failed to remove downloaded video: %v", err)
@@ -333,136 +354,124 @@ func TestStorageRemoveDownloadedVideo(t *testing.T) {
 	}
 }
 
-func TestStorageMigratePrunedVideos(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+// TestStoragePrunedVideoSurvivesReportedScenario reproduces the exact scenario that
+// motivated PurgeExpiredVideos' redesign: a channel with a cutoff date one month ago and
+// a 7-day retention window, and a video from 8 days ago that got downloaded then pruned
+// by the regular retention-cleanup process. That video's publish date is AFTER the
+// channel's cutoff (so the cutoff-floor exemption can never apply to it) and nowhere
+// near permanentBookkeepingGraceDays old, so it must survive indefinitely -- confirmed
+// here even after simulating a full year passing and retention having been raised in the
+// meantime (both of which would, under the old buggy design, have widened the RSS
+// discovery window right back over this video).
+func TestStoragePrunedVideoSurvivesReportedScenario(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add channel with nil PrunedVideos (simulates old schema data).
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	channel := Channel{
-		ID:           "migrate-channel",
-		Name:         "Migrate Channel",
-		URL:          "https://youtube.com/@migrate",
-		PrunedVideos: nil, // explicitly nil = old data
+		ID:            "reported-scenario-channel",
+		Name:          "Reported Scenario Channel",
+		URL:           "https://youtube.com/@reportedscenario",
+		RetentionDays: 7,
+		CutoffDate:    now.AddDate(0, 0, -30), // "a cutoff date of one month ago"
+		PrunedVideos: []PrunedVideo{
+			{ID: "eight-days-old", PublishDate: now.AddDate(0, 0, -8)}, // "a video from 8 days ago"
+		},
 	}
-	storage.AddChannel(channel)
-
-	// Before migration: IsVideoDownloaded should return false.
-	if storage.IsVideoDownloaded(channel.ID, "old-vid-1") {
-		t.Error("expected false before migration")
-	}
-
-	pub1 := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	pub2 := time.Date(2026, 5, 3, 0, 0, 0, 0, time.UTC)
-
-	// Run migration with some previously-seen videos (with publish dates).
-	if err := storage.MigratePrunedVideos(channel.ID, []PrunedVideo{
-		{ID: "old-vid-1", PublishDate: pub1},
-		{ID: "old-vid-2", PublishDate: pub2},
-		{ID: "old-vid-1", PublishDate: pub1}, // duplicate
-	}); err != nil {
-		t.Fatalf("MigratePrunedVideos() error = %v", err)
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	// After migration, those IDs should be considered downloaded.
-	if !storage.IsVideoDownloaded(channel.ID, "old-vid-1") {
-		t.Error("expected true after migration for old-vid-1")
+	// Simulate a year passing, with retention later raised well past the original 7-day
+	// window (the exact edit that would have widened the discovery window under the old
+	// design) -- still must not be purged.
+	oneYearLater := now.AddDate(1, 0, 0)
+	if err := storage.UpdateChannel(channel.ID, 60, false, channel.CutoffDate, "", "", false, false); err != nil {
+		t.Fatalf("UpdateChannel() error = %v", err)
 	}
-	if !storage.IsVideoDownloaded(channel.ID, "old-vid-2") {
-		t.Error("expected true after migration for old-vid-2")
+	if _, err := storage.PurgeExpiredVideos(oneYearLater, 0); err != nil {
+		t.Fatalf("PurgeExpiredVideos() error = %v", err)
 	}
 
-	// PrunedVideos should be non-nil and deduplicated.
+	if !storage.IsVideoDownloaded(channel.ID, "eight-days-old") {
+		t.Fatal("eight-days-old should still be remembered as pruned (and thus never redownloaded) a year later, even after retention was raised")
+	}
 	channels := storage.GetChannels()
-	var found *Channel
-	for i := range channels {
-		if channels[i].ID == channel.ID {
-			found = &channels[i]
-		}
-	}
-	if found == nil {
-		t.Fatal("channel not found after migration")
-	}
-	if found.PrunedVideos == nil {
-		t.Fatal("PrunedVideos should be non-nil after migration")
-	}
-	if len(found.PrunedVideos) != 2 {
-		t.Fatalf("expected 2 pruned videos (deduplicated), got %d: %v", len(found.PrunedVideos), found.PrunedVideos)
-	}
-
-	// Running migration again should be a no-op (already initialized).
-	if err := storage.MigratePrunedVideos(channel.ID, []PrunedVideo{{ID: "extra-vid"}}); err != nil {
-		t.Fatalf("second MigratePrunedVideos() error = %v", err)
-	}
-	channels = storage.GetChannels()
-	for i := range channels {
-		if channels[i].ID == channel.ID {
-			if len(channels[i].PrunedVideos) != 2 {
-				t.Fatalf("expected migration to be no-op on second call, got %d videos", len(channels[i].PrunedVideos))
-			}
-		}
+	if len(channels) != 1 || len(channels[0].PrunedVideos) != 1 || channels[0].PrunedVideos[0].ID != "eight-days-old" {
+		t.Fatalf("expected eight-days-old to remain in the pruned list, got %#v", channels)
 	}
 }
 
-func TestStorageTrimPrunedVideos(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+// TestStoragePurgeExpiredVideosEventuallyReclaimsHandledRows confirms the other half of
+// the design: 'pruned'/'downloaded' rows are NOT permanent forever -- they become
+// eligible for hard deletion once genuinely safe, via either of two boundaries that
+// (unlike the old design) can't be invalidated by an ordinary settings edit:
+// permanentBookkeepingGraceDays, or the channel's own cutoff_date acting as a floor.
+func TestStoragePurgeExpiredVideosEventuallyReclaimsHandledRows(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
+	now := time.Now().UTC()
+
 	channel := Channel{
-		ID:   "trim-channel",
-		Name: "Trim Channel",
-		URL:  "https://youtube.com/@trim",
+		ID:            "reclaim-channel",
+		Name:          "Reclaim Channel",
+		URL:           "https://youtube.com/@reclaim",
+		RetentionDays: 7,
+		CutoffDate:    now.AddDate(0, 0, -60),
 		PrunedVideos: []PrunedVideo{
-			{ID: "old-vid", PublishDate: time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)},
-			{ID: "recent-vid", PublishDate: time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)},
-			{ID: "no-date-vid", PublishDate: time.Time{}}, // zero date: never evict
+			// Past permanentBookkeepingGraceDays (3 years): eligible regardless of cutoff.
+			{ID: "ancient-pruned", PublishDate: now.AddDate(0, 0, -(permanentBookkeepingGraceDays + 30))},
+			// Older than the channel's cutoff, but nowhere near the grace period: eligible
+			// via the cutoff-floor rule alone.
+			{ID: "before-cutoff-pruned", PublishDate: now.AddDate(0, 0, -90)},
+			// After cutoff and well within the grace period: must survive.
+			{ID: "recent-pruned", PublishDate: now.AddDate(0, 0, -8)},
+		},
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "ancient-downloaded", Title: "Ancient", DownloadDate: now.AddDate(0, 0, -(permanentBookkeepingGraceDays + 30))},
+			{ID: "kept-ancient-downloaded", Title: "Kept Ancient", DownloadDate: now.AddDate(0, 0, -(permanentBookkeepingGraceDays + 30)), DisablePruning: true},
 		},
 	}
-	storage.AddChannel(channel)
-
-	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) // old-vid predates this
-
-	if err := storage.TrimPrunedVideos(channel.ID, since); err != nil {
-		t.Fatalf("TrimPrunedVideos() error = %v", err)
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
 	}
 
-	channels := storage.GetChannels()
-	var found *Channel
-	for i := range channels {
-		if channels[i].ID == channel.ID {
-			found = &channels[i]
-		}
+	deleted, err := storage.PurgeExpiredVideos(now, 0)
+	if err != nil {
+		t.Fatalf("PurgeExpiredVideos() error = %v", err)
 	}
-	if found == nil {
-		t.Fatal("channel not found after trim")
+	if deleted != 3 {
+		t.Fatalf("expected 3 rows deleted (ancient-pruned, before-cutoff-pruned, ancient-downloaded), got %d", deleted)
 	}
 
-	// old-vid should be gone; recent-vid and no-date-vid should remain.
-	if len(found.PrunedVideos) != 2 {
-		t.Fatalf("expected 2 pruned videos after trim, got %d: %v", len(found.PrunedVideos), found.PrunedVideos)
+	if storage.IsVideoDownloaded(channel.ID, "ancient-pruned") {
+		t.Error("ancient-pruned should have been purged (past the fixed grace period)")
 	}
-	for _, pv := range found.PrunedVideos {
-		if pv.ID == "old-vid" {
-			t.Error("old-vid should have been evicted")
-		}
+	if storage.IsVideoDownloaded(channel.ID, "before-cutoff-pruned") {
+		t.Error("before-cutoff-pruned should have been purged (older than the channel's cutoff floor)")
 	}
-	if storage.IsVideoDownloaded(channel.ID, "old-vid") {
-		t.Error("old-vid should no longer be considered downloaded after trim")
+	if !storage.IsVideoDownloaded(channel.ID, "recent-pruned") {
+		t.Error("recent-pruned must survive: after cutoff and within the grace period")
 	}
-	if !storage.IsVideoDownloaded(channel.ID, "recent-vid") {
-		t.Error("recent-vid should still be considered downloaded after trim")
+	if storage.IsVideoDownloaded(channel.ID, "ancient-downloaded") {
+		t.Error("ancient-downloaded should have been purged (past the fixed grace period)")
+	}
+	if !storage.IsVideoDownloaded(channel.ID, "kept-ancient-downloaded") {
+		t.Error("kept-ancient-downloaded has disable_pruning and should never be purged")
 	}
 }
 
 func TestStorageUpdateChannelDownloadedVideoPruning(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
@@ -498,14 +507,13 @@ func TestStorageUpdateChannelDownloadedVideoPruning(t *testing.T) {
 }
 
 func TestStorageUpdateChannel(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add channel
 	channel := Channel{
 		ID:            "test-channel",
 		Name:          "Test Channel",
@@ -516,7 +524,6 @@ func TestStorageUpdateChannel(t *testing.T) {
 	}
 	storage.AddChannel(channel)
 
-	// Update channel settings
 	newRetention := 14
 	newDisablePruning := true
 	newCutoff := time.Now().AddDate(0, 0, -14)
@@ -529,7 +536,6 @@ func TestStorageUpdateChannel(t *testing.T) {
 		t.Errorf("Failed to update channel: %v", err)
 	}
 
-	// Verify updates
 	channels := storage.GetChannels()
 	if len(channels) != 1 {
 		t.Fatal("Expected channel to exist")
@@ -554,14 +560,13 @@ func TestStorageUpdateChannel(t *testing.T) {
 }
 
 func TestStorageUpdateVideoLastChecked(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add video
 	video := Video{
 		ID:    "test-video",
 		Title: "Test Video",
@@ -569,14 +574,12 @@ func TestStorageUpdateVideoLastChecked(t *testing.T) {
 	}
 	storage.AddVideo(video)
 
-	// Update last checked time
 	checkTime := time.Now()
 	err = storage.UpdateVideoLastChecked(video.ID, checkTime)
 	if err != nil {
 		t.Errorf("Failed to update video last checked: %v", err)
 	}
 
-	// Verify update
 	videos := storage.GetVideos()
 	if len(videos) != 1 {
 		t.Fatal("Expected video to exist")
@@ -588,7 +591,7 @@ func TestStorageUpdateVideoLastChecked(t *testing.T) {
 }
 
 func TestStorageUpdateVideo(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
@@ -643,14 +646,13 @@ func TestStorageUpdateVideo(t *testing.T) {
 }
 
 func TestStorageConcurrency(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add a channel
 	channel := Channel{
 		ID:   "concurrent-test",
 		Name: "Concurrent Test",
@@ -658,10 +660,8 @@ func TestStorageConcurrency(t *testing.T) {
 	}
 	storage.AddChannel(channel)
 
-	// Simulate concurrent reads and writes
 	done := make(chan bool, 10)
 
-	// 5 readers
 	for i := 0; i < 5; i++ {
 		go func() {
 			for j := 0; j < 100; j++ {
@@ -671,7 +671,6 @@ func TestStorageConcurrency(t *testing.T) {
 		}()
 	}
 
-	// 5 writers
 	for i := 0; i < 5; i++ {
 		go func(id int) {
 			for j := 0; j < 100; j++ {
@@ -683,12 +682,10 @@ func TestStorageConcurrency(t *testing.T) {
 		}(i)
 	}
 
-	// Wait for all goroutines
 	for i := 0; i < 10; i++ {
 		<-done
 	}
 
-	// Verify storage is still consistent
 	channels := storage.GetChannels()
 	if len(channels) != 1 {
 		t.Errorf("Expected 1 channel after concurrent operations, got %d", len(channels))
@@ -696,14 +693,13 @@ func TestStorageConcurrency(t *testing.T) {
 }
 
 func TestStorageVideoErrorTracking(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add video
 	video := Video{
 		ID:    "test-video",
 		Title: "Test Video",
@@ -711,11 +707,9 @@ func TestStorageVideoErrorTracking(t *testing.T) {
 	}
 	storage.AddVideo(video)
 
-	// Set error
 	errorMsg := "Download failed: network timeout"
 	storage.SetVideoError(video.ID, errorMsg)
 
-	// Check error was set
 	videos := storage.GetVideos()
 	if len(videos) == 0 {
 		t.Fatal("Expected video to exist")
@@ -729,7 +723,6 @@ func TestStorageVideoErrorTracking(t *testing.T) {
 		t.Error("Error time should be set")
 	}
 
-	// Clear error
 	storage.ClearVideoError(video.ID)
 
 	videos = storage.GetVideos()
@@ -739,7 +732,7 @@ func TestStorageVideoErrorTracking(t *testing.T) {
 }
 
 func TestStorageEdgeCases(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
@@ -788,27 +781,27 @@ func TestStorageEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("duplicate channel addition allowed", func(t *testing.T) {
+	// The normalized schema enforces channel/video ID uniqueness via real constraints
+	// (channel_sources/video_sources primary keys) instead of the old flat-JSON model's
+	// silent duplicate-ID acceptance -- a deliberate integrity improvement from the
+	// migration, not a regression.
+	t.Run("duplicate channel ID is rejected", func(t *testing.T) {
 		channel := Channel{
 			ID:   "duplicate-test",
 			Name: "Duplicate Test",
 			URL:  "https://youtube.com/@duplicate",
 		}
 
-		err := storage.AddChannel(channel)
-		if err != nil {
+		if err := storage.AddChannel(channel); err != nil {
 			t.Errorf("First add failed: %v", err)
 		}
 
-		// Add again with same ID - should succeed (no duplicate checking)
 		channel2 := channel
 		channel2.Name = "Different Name"
-		err = storage.AddChannel(channel2)
-		if err != nil {
-			t.Errorf("Second add failed: %v", err)
+		if err := storage.AddChannel(channel2); err == nil {
+			t.Error("expected an error adding a channel with a duplicate ID, got nil")
 		}
 
-		// Should have 2 channels with same ID
 		channels := storage.GetChannels()
 		count := 0
 		for _, ch := range channels {
@@ -816,32 +809,28 @@ func TestStorageEdgeCases(t *testing.T) {
 				count++
 			}
 		}
-		if count != 2 {
-			t.Errorf("Expected 2 channels with same ID, got %d", count)
+		if count != 1 {
+			t.Errorf("Expected exactly 1 channel with the ID (duplicate rejected), got %d", count)
 		}
 	})
 
-	t.Run("duplicate video addition allowed", func(t *testing.T) {
+	t.Run("duplicate video ID is rejected", func(t *testing.T) {
 		video := Video{
 			ID:    "duplicate-video",
 			Title: "Duplicate Video",
 			URL:   "https://youtube.com/watch?v=dup",
 		}
 
-		err := storage.AddVideo(video)
-		if err != nil {
+		if err := storage.AddVideo(video); err != nil {
 			t.Errorf("First add failed: %v", err)
 		}
 
-		// Add again with same ID - should succeed (no duplicate checking)
 		video2 := video
 		video2.Title = "Different Title"
-		err = storage.AddVideo(video2)
-		if err != nil {
-			t.Errorf("Second add failed: %v", err)
+		if err := storage.AddVideo(video2); err == nil {
+			t.Error("expected an error adding a video with a duplicate ID, got nil")
 		}
 
-		// Should have 2 videos with same ID
 		videos := storage.GetVideos()
 		count := 0
 		for _, vid := range videos {
@@ -849,14 +838,14 @@ func TestStorageEdgeCases(t *testing.T) {
 				count++
 			}
 		}
-		if count != 2 {
-			t.Errorf("Expected 2 videos with same ID, got %d", count)
+		if count != 1 {
+			t.Errorf("Expected exactly 1 video with the ID (duplicate rejected), got %d", count)
 		}
 	})
 }
 
 func TestStorageMigrateChannelIDs(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
@@ -864,7 +853,6 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 	}
 
 	t.Run("migrate old handle-style IDs to canonical UC IDs", func(t *testing.T) {
-		// Add channels with old-style IDs (not starting with UC)
 		channel1 := Channel{
 			ID:   "@philipdefranco",
 			URL:  "https://www.youtube.com/@philipdefranco",
@@ -885,15 +873,11 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 		storage.AddChannel(channel2)
 		storage.AddChannel(channel3)
 
-		// Test the migration logic by checking what channels need updating
-		// and then manually updating them to simulate what MigrateChannelIDs would do
 		migratedCount := 0
 
-		// Manually test the migration logic by checking what channels need updating
 		channels := storage.GetChannels()
 		for _, ch := range channels {
 			if !strings.HasPrefix(ch.ID, "UC") {
-				// Simulate what the migration would do
 				var newID string
 				switch ch.ID {
 				case "@philipdefranco":
@@ -915,7 +899,6 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 			t.Errorf("Expected 2 channels to be migrated, got %d", migratedCount)
 		}
 
-		// Verify the migration worked
 		updatedChannels := storage.GetChannels()
 		philipFound := false
 		peteFound := false
@@ -948,13 +931,12 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 	})
 
 	t.Run("no migration needed when all channels have UC IDs", func(t *testing.T) {
-		tmpFile2 := filepath.Join(t.TempDir(), "test_data2.json")
+		tmpFile2 := filepath.Join(t.TempDir(), "test_data2.db")
 		storage2, err := NewStorage(tmpFile2)
 		if err != nil {
 			t.Fatalf("Failed to create storage: %v", err)
 		}
 
-		// Add channels with proper UC format IDs
 		channel1 := Channel{
 			ID:   "UCxauM3N4Nb47HG6PuDMh0Ow",
 			URL:  "https://www.youtube.com/channel/UCxauM3N4Nb47HG6PuDMh0Ow",
@@ -969,7 +951,6 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 		storage2.AddChannel(channel1)
 		storage2.AddChannel(channel2)
 
-		// Check that no channels need migration
 		needsMigration := false
 		for _, ch := range storage2.GetChannels() {
 			if !strings.HasPrefix(ch.ID, "UC") {
@@ -981,21 +962,16 @@ func TestStorageMigrateChannelIDs(t *testing.T) {
 		if needsMigration {
 			t.Errorf("Should have no channels needing migration")
 		}
-
-		// Migration should report 0 channels migrated
-		// (We can't call the real MigrateChannelIDs without mocking yt-dlp,
-		// but the logic is covered by checking above)
 	})
 }
 
 func TestRemoveVideoRemovesSingleEntry(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add a single-entry video
 	video := Video{
 		ID:    "video-to-remove",
 		Title: "Test Video",
@@ -1006,18 +982,15 @@ func TestRemoveVideoRemovesSingleEntry(t *testing.T) {
 		t.Fatalf("Failed to add video: %v", err)
 	}
 
-	// Verify it was added
 	videos := storage.GetVideos()
 	if len(videos) != 1 {
 		t.Errorf("Expected 1 video, got %d", len(videos))
 	}
 
-	// Remove the video
 	if err := storage.RemoveVideo("video-to-remove"); err != nil {
 		t.Errorf("Failed to remove video: %v", err)
 	}
 
-	// Verify it was removed
 	videos = storage.GetVideos()
 	if len(videos) != 0 {
 		t.Errorf("Expected 0 videos after removal, got %d", len(videos))
@@ -1025,13 +998,12 @@ func TestRemoveVideoRemovesSingleEntry(t *testing.T) {
 }
 
 func TestRemoveVideoDoesNotAffectOtherVideos(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Add multiple videos
 	video1 := Video{
 		ID:    "video-1",
 		Title: "Video 1",
@@ -1050,18 +1022,15 @@ func TestRemoveVideoDoesNotAffectOtherVideos(t *testing.T) {
 		t.Fatalf("Failed to add video2: %v", err)
 	}
 
-	// Verify both were added
 	videos := storage.GetVideos()
 	if len(videos) != 2 {
 		t.Errorf("Expected 2 videos, got %d", len(videos))
 	}
 
-	// Remove only video1
 	if err := storage.RemoveVideo("video-1"); err != nil {
 		t.Errorf("Failed to remove video1: %v", err)
 	}
 
-	// Verify video1 was removed but video2 remains
 	videos = storage.GetVideos()
 	if len(videos) != 1 {
 		t.Errorf("Expected 1 video after removal, got %d", len(videos))
@@ -1072,24 +1041,20 @@ func TestRemoveVideoDoesNotAffectOtherVideos(t *testing.T) {
 }
 
 func TestRemoveVideoErrorOnNonexistent(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test_data.json")
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("Failed to create storage: %v", err)
 	}
 
-	// Attempt to remove a video that doesn't exist
-	err = storage.RemoveVideo("nonexistent-id")
-
-	// Currently RemoveVideo might succeed silently; this test documents that behavior
-	// If strictness is desired, uncomment the line below:
-	// if err == nil {
-	// 	t.Errorf("Expected error when removing nonexistent video, got nil")
-	// }
+	// RemoveVideo succeeds silently for a nonexistent ID; this test documents that behavior.
+	if err := storage.RemoveVideo("nonexistent-id"); err != nil {
+		t.Errorf("expected no error removing nonexistent video, got %v", err)
+	}
 }
 
 func TestSetChannelThumbnailIfEmpty(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "data.json")
+	tmpFile := filepath.Join(t.TempDir(), "data.db")
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
@@ -1108,7 +1073,6 @@ func TestSetChannelThumbnailIfEmpty(t *testing.T) {
 		t.Errorf("ThumbnailURL = %q, want %q", channels[0].ThumbnailURL, "https://example.com/icon.jpg")
 	}
 
-	// should not overwrite existing thumbnail
 	if err := storage.SetChannelThumbnailIfEmpty("UCthumb1", "https://example.com/other.jpg"); err != nil {
 		t.Fatalf("second SetChannelThumbnailIfEmpty() error = %v", err)
 	}
@@ -1117,19 +1081,17 @@ func TestSetChannelThumbnailIfEmpty(t *testing.T) {
 		t.Errorf("ThumbnailURL overwritten to %q, want original", channels[0].ThumbnailURL)
 	}
 
-	// no-op for unknown channel
 	if err := storage.SetChannelThumbnailIfEmpty("UCunknown", "https://example.com/nope.jpg"); err != nil {
 		t.Errorf("expected no error for unknown channel, got %v", err)
 	}
 
-	// no-op for empty url
 	if err := storage.SetChannelThumbnailIfEmpty("UCthumb1", ""); err != nil {
 		t.Errorf("expected no error for empty url, got %v", err)
 	}
 }
 
 func TestMergeChannelDownloadedVideos(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "data.json")
+	tmpFile := filepath.Join(t.TempDir(), "data.db")
 	storage, err := NewStorage(tmpFile)
 	if err != nil {
 		t.Fatalf("NewStorage() error = %v", err)
@@ -1168,14 +1130,174 @@ func TestMergeChannelDownloadedVideos(t *testing.T) {
 		}
 	}
 
-	// no-op for empty slice
 	if err := storage.MergeChannelDownloadedVideos("UCmerge1", nil); err != nil {
 		t.Errorf("expected no error for empty slice, got %v", err)
 	}
 
-	// error for unknown channel
 	err = storage.MergeChannelDownloadedVideos("UCunknown", []DownloadedVideo{{ID: "x"}})
 	if err == nil {
 		t.Error("expected error for unknown channel, got nil")
+	}
+}
+
+func TestStorageDismissAllFeedVideos(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	channel := Channel{
+		ID:   "dismiss-all-channel",
+		Name: "Dismiss All Channel",
+		URL:  "https://youtube.com/@dismissall",
+		FeedVideos: []FeedVideo{
+			{ID: "feed-1", Title: "Feed 1", PublishedAt: time.Now()},
+			{ID: "feed-2", Title: "Feed 2", PublishedAt: time.Now()},
+		},
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "downloaded-1", Title: "Downloaded 1"},
+		},
+	}
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	count, err := storage.DismissAllFeedVideos(channel.ID)
+	if err != nil {
+		t.Fatalf("DismissAllFeedVideos() error = %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 videos dismissed, got %d", count)
+	}
+
+	channels := storage.GetChannels()
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if len(channels[0].FeedVideos) != 0 {
+		t.Fatalf("expected no pending feed videos left, got %#v", channels[0].FeedVideos)
+	}
+	if len(channels[0].PrunedVideos) != 2 {
+		t.Fatalf("expected 2 pruned videos, got %#v", channels[0].PrunedVideos)
+	}
+	if len(channels[0].DownloadedVideos) != 1 {
+		t.Fatalf("expected the already-downloaded video to be untouched, got %#v", channels[0].DownloadedVideos)
+	}
+
+	// Calling again with nothing pending is a no-op.
+	count, err = storage.DismissAllFeedVideos(channel.ID)
+	if err != nil {
+		t.Fatalf("DismissAllFeedVideos() second call error = %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 videos dismissed on second call, got %d", count)
+	}
+}
+
+// TestStoragePurgeExpiredVideos confirms PurgeExpiredVideos' scope is now restricted to
+// 'pending' rows only: 'downloaded' and 'pruned' rows must survive no matter their age,
+// since both carry the "never redownload" guarantee, which no window-derived age
+// threshold can safely enforce (retention_days/cutoff_date are user-editable, so a
+// video correctly purged under today's window could otherwise resurface and actually
+// get redownloaded if that window widens later -- see AddPrunedVideo's doc comment).
+func TestStoragePurgeExpiredVideos(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "test_data.db")
+
+	storage, err := NewStorage(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+
+	now := time.Now().UTC()
+	longAgo := now.AddDate(0, 0, -30)  // > 2x a 7-day retention window
+	recently := now.AddDate(0, 0, -10) // < 2x a 7-day retention window
+
+	channel := Channel{
+		ID:            "purge-channel",
+		Name:          "Purge Channel",
+		URL:           "https://youtube.com/@purge",
+		RetentionDays: 7,
+		DownloadedVideos: []DownloadedVideo{
+			{ID: "old-downloaded", Title: "Old But Downloaded", DownloadDate: longAgo},
+		},
+		PrunedVideos: []PrunedVideo{
+			{ID: "old-pruned", PublishDate: longAgo},
+		},
+		FeedVideos: []FeedVideo{
+			{ID: "expired-pending", Title: "Expired Pending", PublishedAt: longAgo},
+			{ID: "fresh-pending", Title: "Fresh Pending", PublishedAt: recently},
+		},
+	}
+	if err := storage.AddChannel(channel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	noExpiryChannel := Channel{
+		ID:   "no-expiry-channel",
+		Name: "No Expiry Channel",
+		URL:  "https://youtube.com/@noexpiry",
+		FeedVideos: []FeedVideo{
+			{ID: "no-expiry-pending", Title: "No Expiry", PublishedAt: longAgo},
+		},
+	}
+	if err := storage.AddChannel(noExpiryChannel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	disabledChannel := Channel{
+		ID:             "disabled-pruning-channel",
+		Name:           "Disabled Pruning Channel",
+		URL:            "https://youtube.com/@disabled",
+		RetentionDays:  7,
+		DisablePruning: true,
+		FeedVideos: []FeedVideo{
+			{ID: "disabled-channel-pending", Title: "Disabled Channel", PublishedAt: longAgo},
+		},
+	}
+	if err := storage.AddChannel(disabledChannel); err != nil {
+		t.Fatalf("AddChannel() error = %v", err)
+	}
+
+	deleted, err := storage.PurgeExpiredVideos(now, 0)
+	if err != nil {
+		t.Fatalf("PurgeExpiredVideos() error = %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("expected 1 row deleted (only expired-pending), got %d", deleted)
+	}
+
+	if !storage.IsVideoDownloaded(channel.ID, "old-downloaded") {
+		t.Error("old-downloaded must never be purged: it's a permanent 'downloaded' record")
+	}
+	if !storage.IsVideoDownloaded(channel.ID, "old-pruned") {
+		t.Error("old-pruned must never be purged: it's a permanent 'pruned' record")
+	}
+
+	channels := storage.GetChannels()
+	var found *Channel
+	for i := range channels {
+		if channels[i].ID == channel.ID {
+			found = &channels[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("channel not found")
+	}
+	if len(found.DownloadedVideos) != 1 || len(found.PrunedVideos) != 1 {
+		t.Fatalf("expected downloaded/pruned records untouched, got %#v", found)
+	}
+	if len(found.FeedVideos) != 1 || found.FeedVideos[0].ID != "fresh-pending" {
+		t.Fatalf("expected only expired-pending removed, got %#v", found.FeedVideos)
+	}
+
+	for _, ch := range channels {
+		if ch.ID == noExpiryChannel.ID && len(ch.FeedVideos) != 1 {
+			t.Errorf("no-expiry-pending has no retention configured and should not have been purged, got %#v", ch.FeedVideos)
+		}
+		if ch.ID == disabledChannel.ID && len(ch.FeedVideos) != 1 {
+			t.Errorf("disabled-channel-pending belongs to a disable_pruning channel and should not have been purged, got %#v", ch.FeedVideos)
+		}
 	}
 }
