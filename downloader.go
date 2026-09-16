@@ -1201,19 +1201,15 @@ func (d *Downloader) CleanOldVideosForChannel(channelName, channelID string, ret
 
 	cutoffTime := RetentionCutoff(time.Now(), retentionDays)
 
-	// Get list of downloaded videos to check against
-	channels := store.GetChannels()
-	var channelData *storage.Channel
-	for _, ch := range channels {
-		if ch.ID == channelID {
-			channelData = &ch
-			break
-		}
-	}
-
-	if channelData == nil {
+	// Get the channel's downloaded videos to check against. Look it up directly rather
+	// than scanning store.GetChannels(), which reconstructs every channel's full
+	// downloaded/feed/pruned video lists -- expensive under SQLite, and run here once per
+	// channel on every check cycle.
+	ch, ok := store.GetChannel(channelID)
+	if !ok {
 		return nil // Channel not found
 	}
+	channelData := &ch
 
 	trackedVideos := channelData.DownloadedVideos
 

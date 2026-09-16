@@ -324,6 +324,24 @@ func runChannelMonitor(ctx context.Context, channelID string, config *Config, st
 	}
 
 	lastInterval := config.GetCheckInterval()
+
+	// Stagger this channel's recurring checks to a random phase within the interval.
+	// Without this, every channel monitor (there can be dozens) starts within the same
+	// instant at scheduler startup and then ticks in lockstep forever after, so every
+	// check interval turns into a simultaneous burst of storage queries and RSS/yt-dlp
+	// calls across all channels. The initial check above still runs immediately (unaffected
+	// by this delay) so a newly-added channel is acted on right away.
+	if lastInterval > 0 {
+		jitterMu.Lock()
+		jitter := jitterRand.Int63n(int64(lastInterval))
+		jitterMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Duration(jitter)):
+		}
+	}
+
 	ticker := time.NewTicker(lastInterval)
 	defer ticker.Stop()
 
