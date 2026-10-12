@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -514,6 +515,10 @@ func (d *Downloader) ResolveChannelID(channelURL string) (string, error) {
 // quality can be "best", a specific height like "720", "480", "360", or empty (falls back to
 // the global config default). format can be "mp4", "webm", "mkv", or empty (falls back to the
 // global config default).
+//
+// For mp4, H.264 video and AAC audio are preferred: yt-dlp otherwise ranks AV1/VP9 and Opus
+// highest and muxes them into the .mp4, which many players and media-server clients can't
+// play directly. Falls back to the best available streams when a video has no H.264/AAC.
 func (d *Downloader) buildFormatString(quality, format string) string {
 	quality = strings.TrimSpace(quality)
 	format = strings.TrimSpace(format)
@@ -529,11 +534,18 @@ func (d *Downloader) buildFormatString(quality, format string) string {
 		d.config.RUnlock()
 	}
 
-	if quality == "" || quality == "best" {
-		return "bestvideo+bestaudio/best"
+	height := ""
+	if quality != "" && quality != "best" {
+		height = "[height<=" + quality + "]"
 	}
 
-	return fmt.Sprintf("bestvideo[height<=%s]+bestaudio/best", quality)
+	general := "bestvideo" + height + "+bestaudio/best"
+	if !strings.EqualFold(format, "mp4") {
+		return general
+	}
+
+	h264 := "bestvideo" + height + "[vcodec^=avc1]"
+	return h264 + "+bestaudio[acodec^=mp4a]/" + h264 + "+bestaudio/" + general
 }
 
 // DownloadVideo downloads a video to the specified directory.
@@ -554,6 +566,9 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	if videoID != "" {
 		beforeCount = d.countVideoFiles(channelDir, videoID)
 	}
+	// Only files this download creates get the episode-style names below; anything
+	// already on disk keeps its name.
+	existingFiles := listFileNames(channelDir)
 
 	// Build format string based on desired quality and format
 	formatStr := d.buildFormatString(quality, format)
@@ -690,9 +705,7 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 		normalizeID = videoID
 	}
 	if normalizeID != "" {
-		if err := d.normalizeDownloadedFilenames(channelDir, normalizeID); err != nil {
-			log.Printf("Warning: failed to normalize downloaded filenames for %s: %v", normalizeID, err)
-		}
+		d.nameDownloadedFiles(channelDir, normalizeID, existingFiles)
 	}
 
 	if result.VideoID != "" {
@@ -707,6 +720,24 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 	}
 
 	return result, nil
+}
+
+// nameDownloadedFiles renames a fresh download's files to the episode-style scheme
+// (see episodeVideoFilenameStem). If the upload date can't be read from the info.json,
+// it falls back to the legacy date-prefixed normalization.
+func (d *Downloader) nameDownloadedFiles(channelDir, videoID string, existing map[string]bool) {
+	if metadata, err := d.loadMetadataFromInfoJSON(channelDir, videoID); err == nil {
+		if stem, ok := episodeVideoFilenameStem(metadata); ok {
+			if err := renameNewDownloadFiles(channelDir, videoID, stem, existing); err != nil {
+				log.Printf("Warning: failed to name downloaded files for %s: %v", videoID, err)
+			}
+			return
+		}
+	}
+
+	if err := d.normalizeDownloadedFilenames(channelDir, videoID); err != nil {
+		log.Printf("Warning: failed to normalize downloaded filenames for %s: %v", videoID, err)
+	}
 }
 
 func parseDownloadedVideoInfo(output string) (string, string) {
@@ -771,6 +802,13 @@ func (d *Downloader) loadMetadataFromInfoJSON(channelDir, videoID string) (*Vide
 
 	if duration, ok := raw["duration"].(float64); ok {
 		metadata.Duration = int(duration)
+	}
+
+	for _, key := range []string{"timestamp", "release_timestamp"} {
+		if ts, ok := raw[key].(float64); ok && ts > 0 {
+			metadata.Timestamp = time.Unix(int64(ts), 0).UTC()
+			break
+		}
 	}
 
 	if thumbnail, ok := raw["thumbnail"].(string); ok {
@@ -841,19 +879,44 @@ func (d *Downloader) countVideoFiles(channelDir, videoID string) int {
 			continue
 		}
 		name := entry.Name()
-		lowerName := strings.ToLower(name)
-		if strings.Contains(name, videoID) &&
-			!strings.HasSuffix(lowerName, ".nfo") &&
-			!strings.HasSuffix(lowerName, ".info.json") &&
-			!strings.HasSuffix(lowerName, ".jpg") &&
-			!strings.HasSuffix(lowerName, ".jpeg") &&
-			!strings.HasSuffix(lowerName, ".png") &&
-			!strings.HasSuffix(lowerName, ".webp") {
+		if strings.Contains(name, videoID) && !isSidecarFile(name) {
 			count++
 		}
 	}
 
 	return count
+}
+
+// isSidecarFile reports files that accompany a video (metadata, thumbnails) rather
+// than being the media itself.
+func isSidecarFile(name string) bool {
+	lowerName := strings.ToLower(name)
+	for _, suffix := range []string{".nfo", ".info.json", ".jpg", ".jpeg", ".png", ".webp"} {
+		if strings.HasSuffix(lowerName, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// findVideoFileForID returns the path of videoID's media file in channelDir, preferring
+// an episode-style name when an older copy with a legacy name also exists.
+func findVideoFileForID(channelDir, videoID string) string {
+	var legacy []string
+	for name := range listFileNames(channelDir) {
+		if !strings.Contains(name, videoID) || isSidecarFile(name) || strings.HasSuffix(name, ".part") {
+			continue
+		}
+		if _, _, ok := parseEpisodeFilename(name); ok {
+			return filepath.Join(channelDir, name)
+		}
+		legacy = append(legacy, name)
+	}
+	if len(legacy) == 0 {
+		return ""
+	}
+	sort.Strings(legacy)
+	return filepath.Join(channelDir, legacy[0])
 }
 
 func (d *Downloader) deleteInfoJSONFilesForVideo(channelDir, videoID string) error {
@@ -1406,8 +1469,9 @@ type VideoMetadata struct {
 	Uploader    string
 	ChannelURL  string
 	ChannelIcon string
-	UploadDate  string // YYYY-MM-DD
-	Duration    int    // seconds
+	UploadDate  string    // YYYY-MM-DD
+	Timestamp   time.Time // upload time, when yt-dlp knows it
+	Duration    int       // seconds
 	Thumbnail   string
 	Chapters    []VideoChapter
 }
@@ -1461,16 +1525,27 @@ func (d *Downloader) fetchVideoMetadata(videoURL string) (*VideoMetadata, error)
 }
 
 // generateNFOFile creates an NFO XML file for a video
+// generateNFOFile writes "<video file stem>.nfo", the name media servers look for next to
+// a video, as Kodi/Jellyfin episode metadata. Episode-style files also get their season
+// and episode numbers, matching the filename.
 func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata) error {
-	// Find the video file matching this metadata ID
-	files, err := filepath.Glob(filepath.Join(channelDir, "*"+metadata.ID+"*"))
-	if err != nil || len(files) == 0 {
+	videoFile := findVideoFileForID(channelDir, metadata.ID)
+	if videoFile == "" {
 		return fmt.Errorf("could not find downloaded video file for %s", metadata.ID)
 	}
 
-	videoFile := files[0]
-	nfoPath := strings.TrimSuffix(videoFile, filepath.Ext(videoFile)) + ".nfo"
+	videoStem, _ := splitPortableFilename(filepath.Base(videoFile))
+	nfoPath := filepath.Join(channelDir, videoStem+".nfo")
 	localThumbnail := d.findLocalThumbnailForVideo(channelDir, metadata.ID)
+	sameStemThumbnail := filepath.Join(channelDir, videoStem+".jpg")
+	if _, err := os.Stat(sameStemThumbnail); err == nil {
+		localThumbnail = sameStemThumbnail
+	}
+
+	episodeXML := ""
+	if season, episode, ok := parseEpisodeFilename(filepath.Base(videoFile)); ok {
+		episodeXML = "\n  <season>" + season + "</season>\n  <episode>" + episode + "</episode>"
+	}
 
 	chaptersXML := ""
 	if len(metadata.Chapters) > 0 {
@@ -1514,8 +1589,9 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 
 	// Create NFO XML content
 	nfoContent := `<?xml version="1.0" encoding="UTF-8"?>
-<movie>
+<episodedetails>
   <title>` + escapeXML(metadata.Title) + `</title>
+  <showtitle>` + escapeXML(metadata.Uploader) + `</showtitle>` + episodeXML + `
   <plot>` + escapeXML(metadata.Description) + `</plot>
   <director>` + escapeXML(metadata.Uploader) + `</director>
   <actor>
@@ -1526,10 +1602,10 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
   <premiered>` + metadata.UploadDate + `</premiered>
   <aired>` + metadata.UploadDate + `</aired>
   <runtime>` + fmt.Sprintf("%d", metadata.Duration/60) + `</runtime>
-  <uniqueid type="youtube">` + metadata.ID + `</uniqueid>
+  <uniqueid type="youtube" default="true">` + escapeXML(metadata.ID) + `</uniqueid>
 ` + thumbXML + studioXML + channelURLXML + `
 ` + chaptersXML + `
-</movie>`
+</episodedetails>`
 
 	if err := os.WriteFile(nfoPath, []byte(nfoContent), 0644); err != nil {
 		return fmt.Errorf("failed to write NFO file: %v", err)

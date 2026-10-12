@@ -55,6 +55,8 @@ Primary runtime artifacts:
 
 4. Metadata/file handling:
 - Keep `*.info.json` sidecars after download (pruned later with media)
+- New downloads are named `S<YYYY>E<MMDDhhmmss> <Title>-<id>.<ext>` with a matching `<stem>.nfo` (`<episodedetails>`) so Jellyfin TV libraries don't merge same-day uploads; never rename existing files (legacy `YYYY-MM-DD <Title>-<id>` names must stay as-is), and keep all file matching by video ID
+- For `mp4`, prefer H.264 + AAC in the format selector
 - Request and convert thumbnails to JPG for media server compatibility
 - Resolve single-video channel directory from yt-dlp uploader metadata (do not hardcode `unknown`)
 

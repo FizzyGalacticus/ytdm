@@ -284,15 +284,24 @@ ytdm/
 
 ## File Organization
 
-Downloaded videos are organized by channel:
+Downloaded videos are organized by channel, named so a Jellyfin/Kodi **TV Shows** library treats each channel as a series and each upload as its own episode:
 ```
 /downloads/
-├── Channel_Name_1/
-│   ├── video1.mp4
-│   └── video2.mp4
+├── Saturday_Night_Live/
+│   ├── S2026E1011042913 CopTalkShowSNL-RbXnGCrYNKs.mp4
+│   ├── S2026E1011042913 CopTalkShowSNL-RbXnGCrYNKs.nfo        # episode metadata (title, air date, plot)
+│   ├── S2026E1011042913 CopTalkShowSNL-RbXnGCrYNKs.jpg        # thumbnail
+│   ├── S2026E1011042913 CopTalkShowSNL-RbXnGCrYNKs.info.json  # yt-dlp metadata
+│   └── ...
 └── Channel_Name_2/
-    └── video3.mp4
+    └── ...
 ```
+
+- The season is the upload year and the episode number is the upload time (`MMDDhhmmss`, UTC), so several uploads on the same day don't collapse into one episode. (Jellyfin identifies date-named files by air date alone and merges same-day uploads into "versions" of a single episode.) Videos without an upload time get a stable per-video number for the time-of-day digits.
+- The `.nfo` is named after the video file, which is what Jellyfin reads, and uses Jellyfin/Kodi's `<episodedetails>` format.
+- Videos downloaded before this naming (`YYYY-MM-DD <Title>-<id>.mp4`, with `.info.nfo` metadata) are left exactly as they are, so media servers don't re-index them as new items. ytdm still tracks, checks and prunes them; all file matching is by video ID.
+- For `mp4`, H.264 video and AAC audio are preferred over AV1/VP9 and Opus so files play directly on practically every player and Jellyfin client; YouTube only offers H.264 up to 1080p, so `best` quality with `mp4` tops out there. `webm`/`mkv` keep yt-dlp's default preference.
+- The downloaded file is renamed after yt-dlp finishes, so the `file_name_pattern` setting only affects yt-dlp's temporary name.
 
 ## Logging
 
