@@ -179,7 +179,10 @@ func isAuthError(stderr string) bool {
 
 // runYtDlpWithCookieRetry runs yt-dlp without cookies first. If the command fails
 // with an auth-related error and cookies are configured, it retries automatically
-// with cookies. Returns stdout, stderr, and the exec error from the final attempt.
+// with cookies. A failed run that still produced output is a partial success (e.g. a
+// listing where some videos are members-only) and is not retried: re-running the whole
+// command with cookies doubles the cost and rarely unlocks the failed items. Returns
+// stdout, stderr, and the exec error from the final attempt.
 func (d *Downloader) runYtDlpWithCookieRetry(args []string) (stdout bytes.Buffer, stderr bytes.Buffer, err error) {
 	cmd := d.buildYtDlpCommandNoCookies(args...)
 	cmd.Stdout = &stdout
@@ -194,7 +197,7 @@ func (d *Downloader) runYtDlpWithCookieRetry(args []string) (stdout bytes.Buffer
 	hasCookies := d.config.YtDlp.CookiesBrowser != "" || d.config.YtDlp.CookiesFile != ""
 	d.config.RUnlock()
 
-	if !hasCookies || !isAuthError(stderr.String()) {
+	if !hasCookies || stdout.Len() > 0 || !isAuthError(stderr.String()) {
 		return
 	}
 
@@ -224,55 +227,6 @@ func addJitterSeconds(baseSeconds int, jitterPercent float64) int {
 	jitterMu.Unlock()
 
 	return baseSeconds + jitter
-}
-
-// GetChannelVideos retrieves metadata for all videos from a channel
-func (d *Downloader) GetChannelVideos(channelURL string, since time.Time, downloadShorts bool) ([]VideoInfo, error) {
-	// Use yt-dlp to get video information in JSON format
-	stdout, stderr, err := d.runYtDlpWithCookieRetry([]string{
-		"--dump-json",
-		"--skip-download",
-		"--playlist-end", "50", // Limit to recent 50 videos
-		channelURL,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("yt-dlp failed: %v, stderr: %s", err, stderr.String())
-	}
-
-	// Parse JSON output (one JSON object per line)
-	var videos []VideoInfo
-	lines := strings.Split(stdout.String(), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || !strings.HasPrefix(line, "{") {
-			continue
-		}
-
-		var info VideoInfo
-		if err := json.Unmarshal([]byte(line), &info); err != nil {
-			log.Printf("Failed to parse video info: %v", err)
-			continue
-		}
-
-		info.IsShort = isShortYouTubeURL(info.WebpageURL)
-		if !downloadShorts && info.IsShort {
-			continue
-		}
-
-		// Parse upload date in UTC for consistent retention comparisons.
-		if info.UploadDate != "" {
-			t, err := ParseYouTubeUploadDateUTC(info.UploadDate)
-			if err == nil {
-				info.PublishTime = t
-				// Only include videos published after 'since' time.
-				if t.After(since) {
-					videos = append(videos, info)
-				}
-			}
-		}
-	}
-
-	return videos, nil
 }
 
 // GetChannelVideosFromRSS fetches recent videos from a channel using YouTube's public RSS feed

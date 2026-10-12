@@ -111,6 +111,13 @@ Pruning is based on download age (`now - retention_days`), with per-entry No Pru
 Channel cutoff date is used for channel discovery eligibility and does not trigger pruning by publish date.
 For channel entries, videos already downloaded and later pruned are tracked in persistence to prevent re-download loops.
 
+How new channel videos are found:
+
+- ytdm first asks YouTube's RSS feed for the channel (one cheap request).
+- YouTube has been answering that feed with `404` for many channels since October 2026. When it does, ytdm falls back to a flat yt-dlp listing of the channel (all tabs: Videos, Live, Shorts, in about one request), then looks up only the videos it has never seen, newest first, stopping at the first one older than the discovery window. Logs show this as `RSS feed unavailable (...), using channel listing` followed by a `Channel listing: N listed, N extracted, N unavailable` summary; it's expected while the feed is down.
+- Videos that can't be looked up (members-only without a member's cookies, private, region-locked) are skipped without failing the channel check, and retried after a few hours. Upcoming premieres and live streams are picked up once they've aired.
+- A big first backlog (e.g. an old cutoff date) is looked up at most 50 videos per check; the rest follows on later checks.
+
 ## Cookie Support
 
 YouTube may require authentication to avoid rate limiting. Two options:

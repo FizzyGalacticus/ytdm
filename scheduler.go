@@ -438,15 +438,27 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 		}
 	}
 
-	// Always try fast index (RSS) first, fall back to yt-dlp.
+	// Try the RSS feed first (one cheap request), then a flat channel listing. YouTube
+	// has been answering 404 for many channels' feeds since October 2026, so the
+	// fallback is routine rather than exceptional.
 	var allFeedVideos []VideoInfo
 	feedSource := "rss"
 	var feedErr error
 	allFeedVideos, feedErr = downloader.GetChannelVideosFromRSS(ch.ID, ch.URL, since)
 	if feedErr != nil {
-		logScopef("channel", ch.ID, ch.Name, "RSS feed lookup failed, falling back to yt-dlp: %v", feedErr)
-		feedSource = "yt-dlp"
-		allFeedVideos, feedErr = downloader.GetChannelVideos(ch.URL, since, ch.DownloadShorts)
+		logScopef("channel", ch.ID, ch.Name, "RSS feed unavailable (%v), using channel listing", feedErr)
+		feedSource = "channel listing"
+		var stats ChannelListingStats
+		allFeedVideos, stats, feedErr = downloader.GetChannelVideosFromListing(
+			channelListingURL(ch),
+			since,
+			ch.DownloadShorts,
+			pendingFeedVideos(store, ch.ID),
+			func(videoID string) bool { return store.IsVideoDownloaded(ch.ID, videoID) },
+		)
+		if feedErr == nil {
+			logScopef("channel", ch.ID, ch.Name, "Channel listing: %d listed, %d extracted, %d unavailable", stats.Listed, stats.Extracted, stats.Unavailable)
+		}
 	}
 	if feedErr != nil {
 		_ = store.SetChannelError(ch.ID, feedErr.Error())
@@ -583,6 +595,30 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 	_ = store.ClearChannelError(ch.ID)
 	doChannelCleanup(ctx, ch, store, downloader)
 	return true
+}
+
+// channelListingURL is the channel's root page, which lists every tab (Videos, Live,
+// Shorts). The canonical /channel/UC... form is used when known, since a stored URL may
+// point at a single tab or a handle.
+func channelListingURL(ch storage.Channel) string {
+	if channelID, err := resolveRSSChannelID(ch.ID, ch.URL); err == nil {
+		return "https://www.youtube.com/channel/" + channelID
+	}
+	return ch.URL
+}
+
+// pendingFeedVideos returns the channel's discovered-but-not-downloaded videos, keyed by
+// video ID, so discovery can return them again (keeping them queued) without re-fetching.
+func pendingFeedVideos(store *storage.Storage, channelID string) map[string]VideoInfo {
+	pending := map[string]VideoInfo{}
+	ch, ok := store.GetChannel(channelID)
+	if !ok {
+		return pending
+	}
+	for _, fv := range ch.FeedVideos {
+		pending[fv.ID] = VideoInfo{ID: fv.ID, Title: fv.Title, PublishTime: fv.PublishedAt, IsShort: fv.IsShort}
+	}
+	return pending
 }
 
 // doChannelCleanup runs retention cleanup for a single channel.
