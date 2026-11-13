@@ -1373,10 +1373,10 @@ function renderWebhookCard(hook = {}) {
             </div>
 
             <div class="col-md-4 ntfy-only">
-                <label class="form-label small mb-1">Thumbnail image</label>
+                <label class="form-label small mb-1" title="The image is picked automatically: the video's thumbnail, or the channel's picture when there's no video">Image</label>
                 <select class="form-select form-select-sm" data-field="attachment">
-                    <option value="url" ${!hook.attachment || hook.attachment === 'url' ? 'selected' : ''}>Attach YouTube thumbnail URL</option>
-                    <option value="upload" ${hook.attachment === 'upload' ? 'selected' : ''}>Upload downloaded thumbnail file</option>
+                    <option value="url" ${!hook.attachment || hook.attachment === 'url' ? 'selected' : ''}>Automatic (video thumbnail, else channel picture)</option>
+                    <option value="upload" ${hook.attachment === 'upload' ? 'selected' : ''}>Automatic, uploading the downloaded thumbnail</option>
                     <option value="none" ${hook.attachment === 'none' ? 'selected' : ''}>No image</option>
                 </select>
             </div>
@@ -1406,13 +1406,9 @@ function renderWebhookCard(hook = {}) {
                 <label class="form-label small mb-1">Message template</label>
                 <input type="text" class="form-control form-control-sm" data-field="message" placeholder="Per event, e.g. {{.Title}}" value="${attr(tmpl.message)}">
             </div>
-            <div class="col-md-6 ntfy-only">
+            <div class="col-12 ntfy-only">
                 <label class="form-label small mb-1">Tap action (URL or deeplink)</label>
                 <input type="text" class="form-control form-control-sm" data-field="click" placeholder="Per event, e.g. {{.VideoURL}}" value="${attr(tmpl.click)}">
-            </div>
-            <div class="col-md-6 ntfy-only">
-                <label class="form-label small mb-1">Icon URL</label>
-                <input type="text" class="form-control form-control-sm" data-field="icon" placeholder="Per event, e.g. {{.ChannelThumbnailURL}}" value="${attr(tmpl.icon)}">
             </div>
 
             <div class="col-12 ntfy-only">
@@ -1446,6 +1442,7 @@ function renderWebhookCard(hook = {}) {
             </div>
         </div>`;
 
+    card.dataset.icon = tmpl.icon || '';
     const actionsList = card.querySelector('.actions-list');
     (tmpl.actions || []).forEach(a => actionsList.appendChild(renderActionRow(a)));
 
@@ -1520,7 +1517,7 @@ function collectWebhookCard(card) {
         title: val('title') || undefined,
         message: val('message') || undefined,
         click: val('click') || undefined,
-        icon: val('icon') || undefined,
+        icon: card.dataset.icon || undefined,
         priority: parseInt(val('priority')) || undefined,
         tags: tags.length ? tags : undefined,
         markdown: card.querySelector('[data-field="markdown"]').checked || undefined,

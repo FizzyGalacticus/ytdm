@@ -210,8 +210,8 @@ Who gets notified:
 
 ### ntfy
 
-Set `type` to `ntfy` (the default) and `url` to the topic URL. Notifications include the channel avatar as the icon and open the video when tapped. They can also carry:
-- **Thumbnail image**: `attachment` is `url` (YouTube's thumbnail, the default), `upload` (the downloaded `.jpg` is uploaded to ntfy, which needs attachments enabled on the server), or `none`.
+Set `type` to `ntfy` (the default) and `url` to the topic URL. Images are automatic, with nothing to configure: each notification shows the video's thumbnail, or the channel's picture when there's no video (e.g. a failed channel check), with the channel's picture as the icon. Tapping opens the video. Notifications can also carry:
+- **Image delivery** (optional): `attachment` is `url` (attach the automatic image by URL, the default), `upload` (upload the downloaded thumbnail file instead, which needs attachments enabled on the ntfy server; falls back to `url` when there's no file), or `none`.
 - **Action buttons**: up to 3 `view` (open a URL or app deeplink) or `http` (send a request) buttons.
 - **Auth**: `token` (access token) or `username`/`password`.
 - **Priority, tags/emoji, markdown**, and a custom tap URL (`click`).
@@ -229,7 +229,6 @@ Set `type` to `ntfy` (the default) and `url` to the topic URL. Notifications inc
       "url": "https://ntfy.sh/my-ytdm-topic",
       "token": "tk_...",
       "events": ["video.downloaded", "video.pending", "cookies.expired"],
-      "attachment": "url",
       "template": {
         "actions": [
           { "action": "view", "label": "Open in YouTube app", "url": "vnd.youtube://{{.VideoID}}" },
@@ -247,11 +246,11 @@ Set `type` to `ntfy` (the default) and `url` to the topic URL. Notifications inc
 
 ### Generic JSON webhooks
 
-Set `type` to `json` to `POST` the event as JSON to any URL, with optional `headers`, `token` (Bearer), or `username`/`password`. The body has the event fields below in snake_case (`event`, `channel_name`, `video_id`, `video_url`, `thumbnail_url`, `error`, ...) plus `rendered_title`, `rendered_message`, and `rendered_click`.
+Set `type` to `json` to `POST` the event as JSON to any URL, with optional `headers`, `token` (Bearer), or `username`/`password`. The body has the event fields below in snake_case (`event`, `channel_name`, `video_id`, `video_url`, `thumbnail_url`, `image_url`, `error`, ...) plus `rendered_title`, `rendered_message`, and `rendered_click`.
 
 ### Templates
 
-Title, message, tap URL, icon, and action URLs/bodies are [Go templates](https://pkg.go.dev/text/template). Available fields: `{{.Event}}`, `{{.Title}}`, `{{.VideoID}}`, `{{.VideoURL}}`, `{{.ThumbnailURL}}`, `{{.PublishDate}}`, `{{.ChannelID}}`, `{{.ChannelName}}`, `{{.ChannelURL}}`, `{{.ChannelThumbnailURL}}`, `{{.Error}}`, `{{.Count}}`, and `{{.AppURL}}`.
+Title, message, tap URL, icon, and action URLs/bodies are [Go templates](https://pkg.go.dev/text/template). Available fields: `{{.Event}}`, `{{.Title}}`, `{{.VideoID}}`, `{{.VideoURL}}`, `{{.ThumbnailURL}}`, `{{.ImageURL}}` (the automatic image), `{{.PublishDate}}`, `{{.ChannelID}}`, `{{.ChannelName}}`, `{{.ChannelURL}}`, `{{.ChannelThumbnailURL}}`, `{{.Error}}`, `{{.Count}}`, and `{{.AppURL}}`.
 
 `template` applies to every event and `event_templates` overrides it for one event. Any field left empty falls back to the built-in message for that event. An action button whose URL renders empty (e.g. `{{.VideoURL}}` on a cookies alert) is left out.
 

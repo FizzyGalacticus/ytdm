@@ -531,3 +531,52 @@ func TestNotificationAPI(t *testing.T) {
 		t.Error("disable_notifications=false not applied")
 	}
 }
+
+func TestNotificationImagesAreAutomatic(t *testing.T) {
+	n := useTestNotifier(t)
+	srv, got := captureServer(t, http.StatusOK)
+	// No image settings at all.
+	cfg := configWithWebhooks(WebhookConfig{URL: srv.URL + "/topic"})
+
+	// A video event: the video's thumbnail, with the channel picture as the icon.
+	n.Notify(cfg, NotificationEvent{Event: EventVideoDownloaded, VideoID: "abcdefghijk", ChannelThumbnailURL: "https://yt3.ggpht.com/chan"}, "")
+	// A channel event without a video: the channel's picture.
+	n.Notify(cfg, NotificationEvent{Event: EventChannelCheckFailed, ChannelName: "C", ChannelThumbnailURL: "https://yt3.ggpht.com/chan", Error: "boom"}, "")
+	// A failed standalone video with no channel picture: still the video thumbnail.
+	n.Notify(cfg, NotificationEvent{Event: EventDownloadFailed, VideoID: "zyxwvutsrqp", Error: "boom"}, "")
+	// No video and no channel: no image.
+	n.Notify(cfg, NotificationEvent{Event: EventCookiesExpired}, "")
+	n.Wait()
+
+	byEvent := map[string]map[string]any{}
+	for _, r := range got() {
+		p := decodeJSON(t, r.Body)
+		switch {
+		case strings.Contains(p["message"].(string), "boom") && p["title"] == "Channel check failed: C":
+			byEvent[EventChannelCheckFailed] = p
+		case strings.Contains(asString(p["attach"]), "zyxwvutsrqp"):
+			byEvent[EventDownloadFailed] = p
+		case strings.Contains(asString(p["attach"]), "abcdefghijk"):
+			byEvent[EventVideoDownloaded] = p
+		default:
+			byEvent[EventCookiesExpired] = p
+		}
+	}
+	if p := byEvent[EventVideoDownloaded]; p["attach"] != "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg" || p["icon"] != "https://yt3.ggpht.com/chan" {
+		t.Errorf("video event image/icon = %v / %v", p["attach"], p["icon"])
+	}
+	if p := byEvent[EventChannelCheckFailed]; p["attach"] != "https://yt3.ggpht.com/chan" || p["filename"] != "channel.jpg" || p["icon"] != "https://yt3.ggpht.com/chan" {
+		t.Errorf("channel event image = %v (%v), icon %v", p["attach"], p["filename"], p["icon"])
+	}
+	if p := byEvent[EventDownloadFailed]; p == nil {
+		t.Error("failed standalone video should still get the video thumbnail")
+	}
+	if p := byEvent[EventCookiesExpired]; p == nil || p["attach"] != nil || p["icon"] != nil {
+		t.Errorf("cookies alert should have no image: %v", p)
+	}
+}
+
+func asString(v any) string {
+	s, _ := v.(string)
+	return s
+}

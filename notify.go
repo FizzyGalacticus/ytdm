@@ -91,9 +91,10 @@ type WebhookConfig struct {
 	Username string            `json:"username,omitempty"`
 	Password string            `json:"password,omitempty"`
 	Headers  map[string]string `json:"headers,omitempty"`
-	// Attachment controls the video thumbnail on ntfy notifications: "url" (default)
-	// attaches YouTube's thumbnail by URL, "upload" uploads the downloaded thumbnail
-	// file, "none" sends no image.
+	// Attachment controls the image on ntfy notifications, which is picked
+	// automatically (the video's thumbnail, else the channel's picture; see
+	// NotificationEvent.ImageURL): "url" (default) attaches it by URL, "upload" uploads
+	// the downloaded thumbnail file when there is one, "none" sends no image.
 	Attachment string `json:"attachment,omitempty"`
 	// Template overrides the built-in message for every event; EventTemplates
 	// overrides it further for individual events. Empty fields fall through.
@@ -141,10 +142,14 @@ type NotificationEvent struct {
 	VideoURL            string    `json:"video_url,omitempty"`
 	ThumbnailURL        string    `json:"thumbnail_url,omitempty"`
 	ThumbnailPath       string    `json:"-"`
-	PublishDate         time.Time `json:"publish_date,omitempty"`
-	Error               string    `json:"error,omitempty"`
-	Count               int       `json:"count,omitempty"` // >1 for a pending summary
-	AppURL              string    `json:"app_url,omitempty"`
+	// ImageURL is the notification's picture, filled automatically: the video's
+	// thumbnail, falling back to the channel's picture. Empty when neither applies
+	// (e.g. a cookies alert).
+	ImageURL    string    `json:"image_url,omitempty"`
+	PublishDate time.Time `json:"publish_date,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	Count       int       `json:"count,omitempty"` // >1 for a pending summary
+	AppURL      string    `json:"app_url,omitempty"`
 }
 
 // builtinTemplates are the default ntfy messages per event.
@@ -153,7 +158,6 @@ var builtinTemplates = map[string]MessageTemplate{
 		Title:    "{{.ChannelName}}",
 		Message:  "{{.Title}}",
 		Click:    "{{.VideoURL}}",
-		Icon:     "{{.ChannelThumbnailURL}}",
 		Priority: 3,
 		Tags:     []string{"tv"},
 	},
@@ -161,7 +165,6 @@ var builtinTemplates = map[string]MessageTemplate{
 		Title:    "New video waiting: {{.ChannelName}}",
 		Message:  "{{if gt .Count 1}}{{.Count}} new videos are waiting for a manual download{{else}}{{.Title}}{{end}}",
 		Click:    "{{if gt .Count 1}}{{.AppURL}}{{else}}{{.VideoURL}}{{end}}",
-		Icon:     "{{.ChannelThumbnailURL}}",
 		Priority: 3,
 		Tags:     []string{"hourglass_flowing_sand"},
 	},
@@ -190,7 +193,6 @@ var builtinTemplates = map[string]MessageTemplate{
 		Title:    "ytdm test notification",
 		Message:  "{{if .Title}}Sample video: {{.Title}}{{else}}Notifications are working.{{end}}",
 		Click:    "{{if .VideoURL}}{{.VideoURL}}{{else}}{{.AppURL}}{{end}}",
-		Icon:     "{{.ChannelThumbnailURL}}",
 		Priority: 3,
 		Tags:     []string{"white_check_mark"},
 	},
@@ -400,6 +402,12 @@ func (n *Notifier) prepare(nc NotificationsConfig, ev NotificationEvent) Notific
 			ev.ThumbnailURL = "https://i.ytimg.com/vi/" + url.PathEscape(ev.VideoID) + "/hqdefault.jpg"
 		}
 	}
+	if ev.ImageURL == "" {
+		ev.ImageURL = ev.ThumbnailURL
+	}
+	if ev.ImageURL == "" {
+		ev.ImageURL = ev.ChannelThumbnailURL
+	}
 	return ev
 }
 
@@ -503,6 +511,9 @@ func resolveMessage(w WebhookConfig, ev NotificationEvent) resolvedMessage {
 	if r.Message == "" {
 		r.Message = ev.Event
 	}
+	if r.Icon == "" {
+		r.Icon = ev.ChannelThumbnailURL // automatic: the channel's picture when known
+	}
 	for _, a := range t.Actions {
 		ra := a
 		ra.URL = renderTemplate(a.URL, ev)
@@ -573,10 +584,6 @@ func splitNtfyURL(raw string) (base, topic string, err error) {
 	return strings.TrimSuffix(u.String(), "/"), topic, nil
 }
 
-func isVideoEvent(ev NotificationEvent) bool {
-	return ev.VideoID != "" && (ev.Event == EventVideoDownloaded || ev.Event == EventVideoPending || ev.Event == EventTest)
-}
-
 func (n *Notifier) deliverNtfy(w WebhookConfig, ev NotificationEvent) error {
 	base, topic, err := splitNtfyURL(w.URL)
 	if err != nil {
@@ -588,15 +595,14 @@ func (n *Notifier) deliverNtfy(w WebhookConfig, ev NotificationEvent) error {
 	if mode == "" {
 		mode = attachmentURL
 	}
-	if !isVideoEvent(ev) {
-		mode = attachmentNone
-	}
 	if mode == attachmentUpload {
-		if f, err := os.Open(ev.ThumbnailPath); err == nil {
-			defer f.Close()
-			return n.publishNtfyUpload(w, base+"/"+topic, msg, f, filepath.Base(ev.ThumbnailPath))
+		if ev.ThumbnailPath != "" {
+			if f, err := os.Open(ev.ThumbnailPath); err == nil {
+				defer f.Close()
+				return n.publishNtfyUpload(w, base+"/"+topic, msg, f, filepath.Base(ev.ThumbnailPath))
+			}
 		}
-		mode = attachmentURL // no local file (yet): fall back to the remote thumbnail
+		mode = attachmentURL // no local file: attach the automatic image by URL instead
 	}
 
 	payload := map[string]any{
@@ -624,9 +630,14 @@ func (n *Notifier) deliverNtfy(w WebhookConfig, ev NotificationEvent) error {
 	if len(msg.Actions) > 0 {
 		payload["actions"] = msg.Actions
 	}
-	if mode == attachmentURL && ev.ThumbnailURL != "" {
-		payload["attach"] = ev.ThumbnailURL
-		payload["filename"] = ev.VideoID + ".jpg"
+	if mode == attachmentURL && ev.ImageURL != "" {
+		payload["attach"] = ev.ImageURL
+		// Channel pictures have no file extension; a .jpg name lets clients preview it.
+		if ev.VideoID != "" && ev.ImageURL == ev.ThumbnailURL {
+			payload["filename"] = ev.VideoID + ".jpg"
+		} else {
+			payload["filename"] = "channel.jpg"
+		}
 	}
 
 	body, err := json.Marshal(payload)
