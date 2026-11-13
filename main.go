@@ -16,6 +16,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate-db" {
+		if err := runMigrateDB(os.Args[2:], os.Getenv, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "migrate-db: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	logBuffer := NewLogBuffer(100)
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetOutput(io.MultiWriter(os.Stdout, logBuffer))
@@ -34,13 +42,20 @@ func main() {
 	logBuffer.SetMaxEntries(config.MaxLogEntries)
 	log.Printf("Configuration loaded: %+v", config)
 
-	// Initialize storage
-	store, err := storage.NewStorage("data/data.db")
+	// Initialize storage. SQLite is the default; Postgres is used when configured and
+	// reachable, otherwise ytdm falls back to SQLite rather than refusing to start.
+	dbConfig := dbSettingsFromEnv(os.Getenv)
+	store, err := openStorage(&dbConfig, log.Printf)
 	if err != nil {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
-	log.Println("Storage initialized")
+	databaseStatus.Backend = string(dbConfig.Dialect)
+	databaseStatus.Warning = dbConfig.Warning
+	if dbConfig.Warning != "" {
+		log.Printf("WARNING: %s", dbConfig.Warning)
+	}
+	log.Printf("Storage initialized: %s", dbConfig.describe(dbConfig.Dialect))
 
 	// Create downloader for migrations
 	downloader := NewDownloader(config)

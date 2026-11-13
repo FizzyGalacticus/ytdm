@@ -9,10 +9,11 @@ import (
 
 func TestApplyMigrationsIdempotent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	raw, err := sql.Open("sqlite", "file:"+dbPath)
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
+	db := newDBConn(raw, DialectSQLite)
 	defer db.Close()
 
 	if err := applyMigrations(db); err != nil {

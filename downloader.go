@@ -75,6 +75,10 @@ type DownloadResult struct {
 	VideoID     string
 	VideoTitle  string
 	ChannelIcon string // channel_thumbnail URL from info.json, if available
+	// Filled after a successful download, for notifications.
+	ThumbnailURL  string // remote thumbnail URL from info.json
+	ThumbnailPath string // local thumbnail file written next to the video
+	ChannelURL    string
 }
 
 // NewDownloader creates a new Downloader instance
@@ -210,6 +214,9 @@ func (d *Downloader) runYtDlpWithCookieRetry(args []string) (stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
+	if err != nil && stdout.Len() == 0 {
+		notifyIfCookieProblem(d.config, stderr.String())
+	}
 	return
 }
 
@@ -657,6 +664,7 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 				}
 				return result, nil
 			}
+			notifyIfCookieProblem(d.config, errOutput)
 			return result, fmt.Errorf("yt-dlp download failed: %v, stderr: %s", runErr, errOutput)
 		}
 	}
@@ -713,10 +721,13 @@ func (d *Downloader) DownloadVideo(videoURL, expectedVideoID, channelName, quali
 			log.Printf("Warning: failed to load info json for NFO (%s): %v", result.VideoID, metaErr)
 		} else {
 			result.ChannelIcon = metadata.ChannelIcon
+			result.ThumbnailURL = metadata.Thumbnail
+			result.ChannelURL = metadata.ChannelURL
 			if err := d.generateNFOFile(channelDir, metadata); err != nil {
 				log.Printf("Warning: failed to generate NFO file: %v", err)
 			}
 		}
+		result.ThumbnailPath = d.findLocalThumbnailForVideo(channelDir, result.VideoID)
 	}
 
 	return result, nil

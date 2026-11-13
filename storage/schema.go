@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"embed"
 	"fmt"
 	"io/fs"
@@ -11,13 +10,18 @@ import (
 	"time"
 )
 
-//go:embed migrations/*.sql
+//go:embed migrations/sqlite/*.sql migrations/postgres/*.sql
 var migrationFiles embed.FS
 
 // applyMigrations creates the schema_migrations tracking table if needed, then applies
-// every embedded migration file whose version isn't yet recorded, in ascending numeric
-// order, each inside its own transaction. Safe to call on every startup.
-func applyMigrations(db *sql.DB) error {
+// every embedded migration file for the connection's dialect whose version isn't yet
+// recorded, in ascending numeric order, each inside its own transaction. Safe to call on
+// every startup.
+//
+// Each dialect has its own migrations/<dialect>/ directory, and the two directories must
+// always carry the same version numbers producing equivalent schemas: CopyDatabase relies
+// on that to move data between backends.
+func applyMigrations(db *dbConn) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
@@ -25,7 +29,8 @@ func applyMigrations(db *sql.DB) error {
 		return fmt.Errorf("creating schema_migrations table: %w", err)
 	}
 
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	dir := "migrations/" + string(db.dialect)
+	entries, err := fs.ReadDir(migrationFiles, dir)
 	if err != nil {
 		return fmt.Errorf("reading embedded migrations: %w", err)
 	}
@@ -60,7 +65,7 @@ func applyMigrations(db *sql.DB) error {
 			continue
 		}
 
-		contents, err := migrationFiles.ReadFile("migrations/" + m.filename)
+		contents, err := migrationFiles.ReadFile(dir + "/" + m.filename)
 		if err != nil {
 			return fmt.Errorf("reading migration %s: %w", m.filename, err)
 		}

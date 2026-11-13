@@ -337,6 +337,10 @@ func (s *Storage) ReconcileDownloadedVideos(downloadDir string, channelDirName f
 		}
 		channels = append(channels, c)
 	}
+	if err := channelRows.Err(); err != nil {
+		channelRows.Close()
+		return err
+	}
 	channelRows.Close()
 
 	for _, c := range channels {
@@ -387,7 +391,7 @@ func (s *Storage) ReconcileDownloadedVideos(downloadDir string, channelDirName f
 	return tx.Commit()
 }
 
-func staleDownloadedVideoPKs(tx *sql.Tx, query string, fileNames []string, args ...any) ([]int64, error) {
+func staleDownloadedVideoPKs(tx *dbTx, query string, fileNames []string, args ...any) ([]int64, error) {
 	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, err

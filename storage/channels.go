@@ -133,7 +133,7 @@ func (s *Storage) UpsertFeedVideo(channelID string, video FeedVideo) error {
 
 	res, err := tx.Exec(`UPDATE videos SET
 		title = ?, publish_date = ?, added_at = ?, is_short = ?,
-		manual_download_only = manual_download_only OR ?
+		manual_download_only = CASE WHEN ? <> 0 THEN 1 ELSE manual_download_only END
 		WHERE id = ? AND status = 'pending'`,
 		video.Title, timeToNull(video.PublishedAt), timeToNull(video.AddedAt), video.IsShort,
 		video.ManualDownloadOnly, existingPK)
@@ -319,4 +319,31 @@ func (s *Storage) SetChannelThumbnailIfEmpty(id, url string) error {
 		AND (thumbnail_url IS NULL OR thumbnail_url = '')`,
 		url, sourceYouTube, id)
 	return err
+}
+
+// SetChannelNotificationsDisabled toggles new-video webhook notifications for a channel.
+func (s *Storage) SetChannelNotificationsDisabled(id string, disabled bool) error {
+	_, err := s.db.Exec(`UPDATE channels SET disable_notifications = ?
+		WHERE id = (SELECT channel_id FROM channel_sources WHERE source_id = ? AND source_channel_id = ?)`,
+		disabled, sourceYouTube, id)
+	return err
+}
+
+// ChannelNotificationsEnabled reports whether new-video notifications are on for the
+// channel. It is a light query meant for the download path, which would otherwise load
+// the channel's whole video history through GetChannel.
+func (s *Storage) ChannelNotificationsEnabled(id string) bool {
+	var disabled bool
+	err := s.db.QueryRow(`SELECT c.disable_notifications FROM channels c
+		JOIN channel_sources cs ON cs.channel_id = c.id
+		WHERE cs.source_id = ? AND cs.source_channel_id = ?`, sourceYouTube, id).Scan(&disabled)
+	return err == nil && !disabled
+}
+
+// ChannelLinks returns a channel's URL and thumbnail URL without loading its videos.
+func (s *Storage) ChannelLinks(id string) (url, thumbnailURL string, ok bool) {
+	err := s.db.QueryRow(`SELECT cs.url, c.thumbnail_url FROM channels c
+		JOIN channel_sources cs ON cs.channel_id = c.id
+		WHERE cs.source_id = ? AND cs.source_channel_id = ?`, sourceYouTube, id).Scan(&url, &thumbnailURL)
+	return url, thumbnailURL, err == nil
 }

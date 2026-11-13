@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,7 +14,7 @@ import (
 // invocation -- a no-op after the first successful run. Idempotency is governed entirely
 // by the json_import_state flag, not by whether the tables happen to be empty, so a
 // legitimately-emptied live database is never mistaken for "never imported."
-func importLegacyJSONIfNeeded(db *sql.DB, legacyPath string) error {
+func importLegacyJSONIfNeeded(db *dbConn, legacyPath string) error {
 	var alreadyImported bool
 	if err := db.QueryRow(`SELECT imported FROM json_import_state WHERE id = 1`).Scan(&alreadyImported); err != nil {
 		return err
@@ -123,19 +122,15 @@ type importVideoRow struct {
 	uploaderSourceID   string
 }
 
-func insertVideoRow(tx *sql.Tx, row importVideoRow) (int64, error) {
-	res, err := tx.Exec(`INSERT INTO videos (
+func insertVideoRow(tx *dbTx, row importVideoRow) (int64, error) {
+	var videoPK int64
+	if err := tx.QueryRow(`INSERT INTO videos (
 		title, publish_date, added_at, last_checked, disable_pruning, status, download_date,
 		is_short, manual_download_only, last_error, last_error_time
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		row.title, timeToNull(row.publishDate), timeToNull(row.addedAt), timeToNull(row.lastChecked),
 		row.disablePruning, row.status, timeToNull(row.downloadDate), row.isShort,
-		row.manualDownloadOnly, row.lastError, timeToNull(row.lastErrorTime))
-	if err != nil {
-		return 0, err
-	}
-	videoPK, err := res.LastInsertId()
-	if err != nil {
+		row.manualDownloadOnly, row.lastError, timeToNull(row.lastErrorTime)).Scan(&videoPK); err != nil {
 		return 0, err
 	}
 
@@ -151,21 +146,17 @@ func insertVideoRow(tx *sql.Tx, row importVideoRow) (int64, error) {
 	return videoPK, nil
 }
 
-func importChannel(tx *sql.Tx, ch Channel) error {
-	res, err := tx.Exec(`INSERT INTO channels (
+func importChannel(tx *dbTx, ch Channel) error {
+	var channelPK int64
+	if err := tx.QueryRow(`INSERT INTO channels (
 		name, last_checked, retention_days, disable_pruning, cutoff_date, video_quality,
 		video_format, download_shorts, skip_auto_download, last_error, last_error_time,
-		thumbnail_url, backlog_scan_complete
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		thumbnail_url, backlog_scan_complete, disable_notifications
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		ch.Name, timeToNull(ch.LastChecked), ch.RetentionDays, ch.DisablePruning,
 		timeToNull(ch.CutoffDate), ch.VideoQuality, ch.VideoFormat, ch.DownloadShorts,
 		ch.SkipAutoDownload, ch.LastError, timeToNull(ch.LastErrorTime), ch.ThumbnailURL,
-		ch.BacklogScanComplete)
-	if err != nil {
-		return err
-	}
-	channelPK, err := res.LastInsertId()
-	if err != nil {
+		ch.BacklogScanComplete, ch.DisableNotifications).Scan(&channelPK); err != nil {
 		return err
 	}
 
@@ -234,7 +225,7 @@ func videoStatusRank(status string) int {
 //     attempting a duplicate insert (which would violate the video_sources uniqueness
 //     constraint) or silently skipping it (which would drop the video's download history
 //     during the move).
-func insertChannelVideo(tx *sql.Tx, channelPK int64, row importVideoRow) (int64, error) {
+func insertChannelVideo(tx *dbTx, channelPK int64, row importVideoRow) (int64, error) {
 	if row.sourceVideoID != "" {
 		if existingPK, ok, err := resolveVideoPK(tx, row.sourceVideoID); err != nil {
 			return 0, err
@@ -295,7 +286,7 @@ func insertChannelVideo(tx *sql.Tx, channelPK int64, row importVideoRow) (int64,
 // this at all for an ID that's already tracked, most commonly because it's redundant
 // with a tracked channel's own lists) and applies it before ever reaching this function,
 // rather than by changing what this function does.
-func importStandaloneVideo(tx *sql.Tx, v Video) error {
+func importStandaloneVideo(tx *dbTx, v Video) error {
 	row := importVideoRow{
 		sourceVideoID:    v.ID,
 		title:            v.Title,
@@ -363,7 +354,7 @@ func standaloneVideoFinalID(v Video) string {
 // (the rename to .migrated only happens after a successful commit) -- so a validation
 // failure never corrupts the live database, and the original data remains available for
 // a retry or manual recovery.
-func validateImport(tx *sql.Tx, legacy StorageData) error {
+func validateImport(tx *dbTx, legacy StorageData) error {
 	for _, ch := range legacy.Channels {
 		if ch.ID == "" {
 			continue
@@ -432,7 +423,11 @@ func validateImport(tx *sql.Tx, legacy StorageData) error {
 	}
 
 	// Belt-and-suspenders: catch any foreign-key inconsistency the logical checks above
-	// wouldn't (e.g. an orphaned join row from a future bug in this code).
+	// wouldn't (e.g. an orphaned join row from a future bug in this code). PostgreSQL
+	// enforces foreign keys on every statement, so the check is SQLite-only.
+	if tx.dialect != DialectSQLite {
+		return nil
+	}
 	fkRows, err := tx.Query(`PRAGMA foreign_key_check`)
 	if err != nil {
 		return fmt.Errorf("running foreign_key_check: %w", err)

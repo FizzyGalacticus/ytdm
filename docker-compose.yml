@@ -13,6 +13,16 @@ services:
     restart: unless-stopped
     environment:
       - TZ=America/Los_Angeles
+      # Optional: store channels/videos in PostgreSQL instead of data/data.db.
+      # The database name is required; if Postgres is misconfigured or unreachable,
+      # ytdm logs a warning and keeps running on SQLite.
+      # Move existing data first with: docker compose run --rm ytdm ./ytdm migrate-db --to postgres
+      # - YTDM_POSTGRES_HOST=postgres
+      # - YTDM_POSTGRES_USER=ytdm
+      # - YTDM_POSTGRES_PASSWORD=change-me
+      # - YTDM_POSTGRES_DATABASE=ytdm
+      # - YTDM_POSTGRES_SSLMODE=disable
+      # - YTDM_POSTGRES_SCHEMA=ytdm
     healthcheck:
       test: ["CMD", "wget", "-q", "--tries=1", "-O", "/dev/null", "http://localhost:8080/api/status"]
       interval: 30s

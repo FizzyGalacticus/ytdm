@@ -103,14 +103,16 @@ func TestRealProductionDataImports(t *testing.T) {
 		t.Errorf("%d legacy video ID(s) did not resolve to any row after import", missing)
 	}
 
-	// No dangling foreign keys.
-	fkRows, err := store.db.Query(`PRAGMA foreign_key_check`)
-	if err != nil {
-		t.Fatalf("foreign_key_check: %v", err)
-	}
-	defer fkRows.Close()
-	if fkRows.Next() {
-		t.Error("foreign key inconsistency found after importing real data")
+	// No dangling foreign keys (PostgreSQL enforces them on every statement).
+	if store.Dialect() == DialectSQLite {
+		fkRows, err := store.db.Query(`PRAGMA foreign_key_check`)
+		if err != nil {
+			t.Fatalf("foreign_key_check: %v", err)
+		}
+		defer fkRows.Close()
+		if fkRows.Next() {
+			t.Error("foreign key inconsistency found after importing real data")
+		}
 	}
 
 	// Re-opening must be idempotent: no duplication, no re-import, same counts.

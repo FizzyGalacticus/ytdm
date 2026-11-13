@@ -22,17 +22,18 @@ type YtDlpConfig struct {
 // Config holds the application configuration
 type Config struct {
 	sync.RWMutex
-	CheckInterval       string      `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
-	RetentionDays       int         `json:"retention_days"`
-	DisablePruning      bool        `json:"disable_pruning"`
-	DownloadDir         string      `json:"download_dir"`
-	FileNamePattern     string      `json:"file_name_pattern"`
-	APIPort             int         `json:"api_port"`
-	MaxConcurrent       int         `json:"max_concurrent_downloads"`
-	DefaultVideoFormat  string      `json:"default_video_format"`  // mp4, webm, mkv
-	DefaultVideoQuality string      `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
-	MaxLogEntries       int         `json:"max_log_entries"`       // per-scope log ring buffer size
-	YtDlp               YtDlpConfig `json:"yt_dlp"`
+	CheckInterval       string              `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
+	RetentionDays       int                 `json:"retention_days"`
+	DisablePruning      bool                `json:"disable_pruning"`
+	DownloadDir         string              `json:"download_dir"`
+	FileNamePattern     string              `json:"file_name_pattern"`
+	APIPort             int                 `json:"api_port"`
+	MaxConcurrent       int                 `json:"max_concurrent_downloads"`
+	DefaultVideoFormat  string              `json:"default_video_format"`  // mp4, webm, mkv
+	DefaultVideoQuality string              `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
+	MaxLogEntries       int                 `json:"max_log_entries"`       // per-scope log ring buffer size
+	YtDlp               YtDlpConfig         `json:"yt_dlp"`
+	Notifications       NotificationsConfig `json:"notifications"`
 }
 
 // DefaultConfig returns a Config with default values
@@ -55,6 +56,7 @@ func DefaultConfig() *Config {
 			RestrictFilenames:       false,
 			CacheDir:                "data/yt-dlp-cache",
 		},
+		Notifications: defaultNotificationsConfig(),
 	}
 }
 
@@ -95,6 +97,9 @@ func (c *Config) ReloadFromDisk(path string) error {
 		return err
 	}
 
+	// Decode notifications into fresh values: json.Unmarshal would otherwise reuse the
+	// existing webhook slice and maps in place, racing deliveries that hold a snapshot.
+	c.Notifications = NotificationsConfig{}
 	if err := json.Unmarshal(data, c); err != nil {
 		return err
 	}
@@ -129,6 +134,7 @@ func applyConfigDefaults(c *Config) {
 	if c.MaxLogEntries <= 0 {
 		c.MaxLogEntries = 100
 	}
+	applyNotificationDefaults(&c.Notifications)
 }
 
 // GetCheckInterval returns the current check interval as time.Duration with locking

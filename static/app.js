@@ -259,6 +259,8 @@ async function loadStatus() {
                 <span class="ms-3"><strong>Videos:</strong> ${data.data.videos_count}</span>
                 <span class="ms-3"><strong>yt-dlp:</strong> ${versionText}</span>
                 <span class="ms-3"><strong>Commit:</strong> ${appCommit}</span>
+                ${data.data.database ? `<span class="ms-3"><strong>Database:</strong> ${escapeHtml(data.data.database === 'postgres' ? 'PostgreSQL' : 'SQLite')}</span>` : ''}
+                ${data.data.database_warning ? `<span class="badge bg-warning text-dark ms-3" title="${attr(data.data.database_warning)}"><i class="bi bi-exclamation-triangle me-1"></i>Database fallback</span>` : ''}
             `;
         }
     } catch (error) {
@@ -401,6 +403,7 @@ async function loadChannels() {
                                     ${formatText}
                                     ${pruningText}
                                     ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
+                                    ${ch.disable_notifications ? '<span class="badge bg-secondary ms-2" title="Webhook notifications are off for this channel"><i class="bi bi-bell-slash me-1"></i>Muted</span>' : ''}
                                     ${errorBadge}<br>
                                     <small class="text-muted">${ch.url}</small><br>
                                     <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
@@ -410,7 +413,7 @@ async function loadChannels() {
                                     <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${ch.name.replace(/'/g, "\\'")}')">
                                         <i class="bi bi-journal-text"></i> Logs
                                     </button>
-                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts}, ${ch.skip_auto_download})">
+                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts}, ${ch.skip_auto_download}, ${!!ch.disable_notifications})">
                                         <i class="bi bi-pencil"></i> Edit
                                     </button>
                                     <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
@@ -705,6 +708,8 @@ async function loadConfig() {
             document.getElementById('ytDlpCacheDir').value = ytDlp.cache_dir || '';
             document.getElementById('restrictFilenames').checked = !!ytDlp.restrict_filenames;
             document.getElementById('cookiesBrowser').value = ytDlp.cookies_browser || '';
+
+            loadNotificationSettings(config.notifications || {}, config.notification_events || []);
         }
     } catch (error) {
         showToast('Failed to load configuration', true);
@@ -882,6 +887,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const downloadShorts = document.getElementById('channelDownloadShorts').checked;
     const disablePruning = document.getElementById('channelDisablePruning').checked;
     const skipAutoDownload = !document.getElementById('channelAutoDownload').checked;
+    const disableNotifications = !document.getElementById('channelNotify').checked;
 
     const channelData = {
         name,
@@ -892,6 +898,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         video_format: format,
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
+        disable_notifications: disableNotifications,
     };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
@@ -957,7 +964,7 @@ async function setChannelVideoPruning(channelId, videoId, disablePruning) {
 }
 
 // Open edit channel modal
-function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts, skipAutoDownload) {
+function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts, skipAutoDownload, disableNotifications) {
     document.getElementById('editChannelId').value = id;
     document.getElementById('editChannelName').value = name;
     document.getElementById('editChannelRetention').value = retentionDays || '';
@@ -975,6 +982,7 @@ function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDat
     document.getElementById('editChannelFormat').value = videoFormat || '';
     document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
     document.getElementById('editChannelAutoDownload').checked = !skipAutoDownload;
+    document.getElementById('editChannelNotify').checked = !disableNotifications;
 
     const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
     modal.show();
@@ -990,6 +998,7 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
     const videoFormat = document.getElementById('editChannelFormat').value; // Empty string = use global default
     const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
     const skipAutoDownload = !document.getElementById('editChannelAutoDownload').checked;
+    const disableNotifications = !document.getElementById('editChannelNotify').checked;
 
     const updateData = {
         retention_days: retentionDays,
@@ -998,6 +1007,7 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
         video_format: videoFormat,
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
+        disable_notifications: disableNotifications,
     };
 
     // Only include cutoff date if it's set
@@ -1171,6 +1181,13 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
     };
 
     try {
+        config.notifications = collectNotificationSettings();
+    } catch (error) {
+        showToast(error.message, true);
+        return;
+    }
+
+    try {
         const response = await fetch(`${API_BASE}/config`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -1223,3 +1240,360 @@ setInterval(() => {
     loadChannels().then(loadVideos);
     loadLogs();
 }, 30000);
+
+
+// ---- Notifications settings ----
+
+const NOTIFICATION_EVENT_LABELS = {
+    'video.downloaded': 'New video downloaded',
+    'video.pending': 'New video waiting (no auto-download)',
+    'download.failed': 'Download failed',
+    'cookies.expired': 'Cookies need attention',
+    'channel.check_failed': 'Channel check failed',
+};
+let notificationEvents = Object.keys(NOTIFICATION_EVENT_LABELS);
+
+function loadNotificationSettings(notifications, events) {
+    if (events.length) {
+        notificationEvents = events;
+    }
+    document.getElementById('notifyIndividualVideos').checked = notifications.individual_videos !== false;
+    document.getElementById('notifyAppURL').value = notifications.app_url || '';
+    document.getElementById('notifyRepeatCooldown').value = notifications.repeat_cooldown || '6h0m0s';
+    document.getElementById('notifyPendingThreshold').value = notifications.pending_summary_threshold || 5;
+    const list = document.getElementById('webhooksList');
+    list.innerHTML = '';
+    (notifications.webhooks || []).forEach(hook => list.appendChild(renderWebhookCard(hook)));
+    updateWebhookEmptyState();
+}
+
+function updateWebhookEmptyState() {
+    const list = document.getElementById('webhooksList');
+    const empty = list.querySelector('.webhook-empty');
+    const hasCards = list.querySelector('.webhook-card') !== null;
+    if (!hasCards && !empty) {
+        list.insertAdjacentHTML('beforeend', '<p class="text-muted webhook-empty mb-2">No webhooks yet. Add an ntfy topic or a generic JSON endpoint.</p>');
+    } else if (hasCards && empty) {
+        empty.remove();
+    }
+}
+
+// Escapes a value for use inside a double- or single-quoted HTML attribute.
+function attr(value) {
+    return escapeHtml(value == null ? '' : String(value)).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderActionRow(action = {}) {
+    const row = document.createElement('div');
+    row.className = 'row g-2 align-items-center mb-2 action-row';
+    const type = action.action || 'view';
+    row.innerHTML = `
+        <div class="col-md-2">
+            <select class="form-select form-select-sm" data-field="action">
+                <option value="view" ${type === 'view' ? 'selected' : ''}>Open URL</option>
+                <option value="http" ${type === 'http' ? 'selected' : ''}>HTTP request</option>
+            </select>
+        </div>
+        <div class="col-md-2"><input type="text" class="form-control form-control-sm" data-field="label" placeholder="Label" value="${attr(action.label)}"></div>
+        <div class="col-md-5"><input type="text" class="form-control form-control-sm" data-field="url" placeholder="https://... or app deeplink, e.g. vnd.youtube://{{.VideoID}}" value="${attr(action.url)}"></div>
+        <div class="col-md-1"><input type="text" class="form-control form-control-sm" data-field="method" placeholder="POST" title="HTTP method (HTTP request actions)" value="${attr(action.method)}"></div>
+        <div class="col-md-1">
+            <div class="form-check" title="Dismiss the notification after tapping">
+                <input class="form-check-input" type="checkbox" data-field="clear" ${action.clear ? 'checked' : ''}>
+                <label class="form-check-label small">Clear</label>
+            </div>
+        </div>
+        <div class="col-md-1 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-act="remove-action" title="Remove button"><i class="bi bi-x-lg"></i></button></div>`;
+    // Keep body/headers/extras authored outside the UI (config.json) intact on save.
+    row.dataset.extra = JSON.stringify({ body: action.body, headers: action.headers, extras: action.extras });
+    const typeSelect = row.querySelector('[data-field="action"]');
+    const methodInput = row.querySelector('[data-field="method"]');
+    const syncMethod = () => {
+        methodInput.disabled = typeSelect.value !== 'http';
+        if (methodInput.disabled) methodInput.value = '';
+    };
+    syncMethod();
+    typeSelect.addEventListener('change', syncMethod);
+    return row;
+}
+
+function renderWebhookCard(hook = {}) {
+    const card = document.createElement('div');
+    const type = hook.type || 'ntfy';
+    const tmpl = hook.template || {};
+    const subscribed = hook.events && hook.events.length ? hook.events : notificationEvents;
+    card.className = 'webhook-card' + (hook.disabled ? ' disabled-hook' : '');
+    card.innerHTML = `
+        <div class="row g-2">
+            <div class="col-md-3">
+                <label class="form-label small mb-1">Name</label>
+                <input type="text" class="form-control form-control-sm" data-field="name" placeholder="Phone" value="${attr(hook.name)}">
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small mb-1">Type</label>
+                <select class="form-select form-select-sm" data-field="type">
+                    <option value="ntfy" ${type === 'ntfy' ? 'selected' : ''}>ntfy</option>
+                    <option value="json" ${type === 'json' ? 'selected' : ''}>JSON POST</option>
+                </select>
+            </div>
+            <div class="col-md-5">
+                <label class="form-label small mb-1">URL</label>
+                <input type="url" class="form-control form-control-sm" data-field="url" placeholder="${type === 'ntfy' ? 'https://ntfy.sh/your-topic' : 'https://example.com/hook'}" value="${attr(hook.url)}">
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" data-field="enabled" ${hook.disabled ? '' : 'checked'}>
+                    <label class="form-check-label small">Enabled</label>
+                </div>
+            </div>
+
+            <div class="col-12">
+                <label class="form-label small mb-1">Events</label>
+                <div class="d-flex flex-wrap gap-3">
+                    ${notificationEvents.map(ev => `
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" data-event="${attr(ev)}" ${subscribed.includes(ev) ? 'checked' : ''}>
+                            <label class="form-check-label small" title="${attr(ev)}">${escapeHtml(NOTIFICATION_EVENT_LABELS[ev] || ev)}</label>
+                        </div>`).join('')}
+                </div>
+            </div>
+
+            <div class="col-md-4">
+                <label class="form-label small mb-1">Access token</label>
+                <input type="password" class="form-control form-control-sm" data-field="token" autocomplete="off" placeholder="Bearer token (optional)" value="${attr(hook.token)}">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small mb-1">Username</label>
+                <input type="text" class="form-control form-control-sm" data-field="username" autocomplete="off" value="${attr(hook.username)}">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small mb-1">Password</label>
+                <input type="password" class="form-control form-control-sm" data-field="password" autocomplete="off" value="${attr(hook.password)}">
+            </div>
+
+            <div class="col-md-4 ntfy-only">
+                <label class="form-label small mb-1">Thumbnail image</label>
+                <select class="form-select form-select-sm" data-field="attachment">
+                    <option value="url" ${!hook.attachment || hook.attachment === 'url' ? 'selected' : ''}>Attach YouTube thumbnail URL</option>
+                    <option value="upload" ${hook.attachment === 'upload' ? 'selected' : ''}>Upload downloaded thumbnail file</option>
+                    <option value="none" ${hook.attachment === 'none' ? 'selected' : ''}>No image</option>
+                </select>
+            </div>
+            <div class="col-md-2 ntfy-only">
+                <label class="form-label small mb-1">Priority</label>
+                <select class="form-select form-select-sm" data-field="priority">
+                    <option value="0" ${!tmpl.priority ? 'selected' : ''}>Per event</option>
+                    ${[1, 2, 3, 4, 5].map(p => `<option value="${p}" ${tmpl.priority === p ? 'selected' : ''}>${p}</option>`).join('')}
+                </select>
+            </div>
+            <div class="col-md-4 ntfy-only">
+                <label class="form-label small mb-1">Tags / emoji</label>
+                <input type="text" class="form-control form-control-sm" data-field="tags" placeholder="Per event, e.g. tv,youtube" value="${attr((tmpl.tags || []).join(','))}">
+            </div>
+            <div class="col-md-2 ntfy-only d-flex align-items-end">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" data-field="markdown" ${tmpl.markdown ? 'checked' : ''}>
+                    <label class="form-check-label small">Markdown</label>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <label class="form-label small mb-1">Title template</label>
+                <input type="text" class="form-control form-control-sm" data-field="title" placeholder="Per event, e.g. {{.ChannelName}}" value="${attr(tmpl.title)}">
+            </div>
+            <div class="col-md-6">
+                <label class="form-label small mb-1">Message template</label>
+                <input type="text" class="form-control form-control-sm" data-field="message" placeholder="Per event, e.g. {{.Title}}" value="${attr(tmpl.message)}">
+            </div>
+            <div class="col-md-6 ntfy-only">
+                <label class="form-label small mb-1">Tap action (URL or deeplink)</label>
+                <input type="text" class="form-control form-control-sm" data-field="click" placeholder="Per event, e.g. {{.VideoURL}}" value="${attr(tmpl.click)}">
+            </div>
+            <div class="col-md-6 ntfy-only">
+                <label class="form-label small mb-1">Icon URL</label>
+                <input type="text" class="form-control form-control-sm" data-field="icon" placeholder="Per event, e.g. {{.ChannelThumbnailURL}}" value="${attr(tmpl.icon)}">
+            </div>
+
+            <div class="col-12 ntfy-only">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">Action buttons (up to 3)</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-act="add-action"><i class="bi bi-plus-lg"></i> Button</button>
+                </div>
+                <div class="actions-list"></div>
+            </div>
+
+            <div class="col-12">
+                <details>
+                    <summary class="small text-muted">Advanced: custom headers and per-event overrides (JSON)</summary>
+                    <div class="row g-2 mt-1">
+                        <div class="col-md-4">
+                            <label class="form-label small mb-1">Headers</label>
+                            <textarea class="form-control" rows="4" data-field="headers" placeholder='{"X-Api-Key": "..."}'>${hook.headers && Object.keys(hook.headers).length ? escapeHtml(JSON.stringify(hook.headers, null, 2)) : ''}</textarea>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label small mb-1">Per-event overrides</label>
+                            <textarea class="form-control" rows="4" data-field="event_templates" placeholder='{"cookies.expired": {"priority": 5, "tags": ["rotating_light"]}}'>${hook.event_templates && Object.keys(hook.event_templates).length ? escapeHtml(JSON.stringify(hook.event_templates, null, 2)) : ''}</textarea>
+                        </div>
+                    </div>
+                </details>
+            </div>
+
+            <div class="col-12 d-flex justify-content-end gap-2">
+                <span class="small align-self-center me-auto test-result"></span>
+                <button type="button" class="btn btn-sm btn-outline-info" data-act="test"><i class="bi bi-send"></i> Send test</button>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-act="remove"><i class="bi bi-trash"></i> Remove</button>
+            </div>
+        </div>`;
+
+    const actionsList = card.querySelector('.actions-list');
+    (tmpl.actions || []).forEach(a => actionsList.appendChild(renderActionRow(a)));
+
+    const syncType = () => {
+        const isNtfy = card.querySelector('[data-field="type"]').value === 'ntfy';
+        card.querySelectorAll('.ntfy-only').forEach(el => el.classList.toggle('d-none', !isNtfy));
+    };
+    syncType();
+    card.querySelector('[data-field="type"]').addEventListener('change', syncType);
+    card.querySelector('[data-field="enabled"]').addEventListener('change', (e) => {
+        card.classList.toggle('disabled-hook', !e.target.checked);
+    });
+
+    card.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const act = btn.dataset.act;
+        if (act === 'remove') {
+            card.remove();
+            updateWebhookEmptyState();
+        } else if (act === 'add-action') {
+            if (actionsList.children.length >= 3) {
+                showToast('ntfy supports at most 3 action buttons', true);
+                return;
+            }
+            actionsList.appendChild(renderActionRow());
+        } else if (act === 'remove-action') {
+            btn.closest('.action-row').remove();
+        } else if (act === 'test') {
+            await testWebhookCard(card, btn);
+        }
+    });
+    return card;
+}
+
+function parseJSONField(card, field, label) {
+    const raw = card.querySelector(`[data-field="${field}"]`).value.trim();
+    if (!raw) return undefined;
+    try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) throw new Error();
+        return parsed;
+    } catch {
+        throw new Error(`${label} must be a JSON object`);
+    }
+}
+
+function collectWebhookCard(card) {
+    const val = (field) => card.querySelector(`[data-field="${field}"]`).value.trim();
+    const name = val('name') || val('url') || 'webhook';
+    const checkedEvents = [...card.querySelectorAll('[data-event]')].filter(cb => cb.checked).map(cb => cb.dataset.event);
+    if (checkedEvents.length === 0) {
+        throw new Error(`Webhook "${name}": select at least one event`);
+    }
+    const actions = [...card.querySelectorAll('.action-row')].map(row => {
+        const get = (f) => row.querySelector(`[data-field="${f}"]`);
+        const extra = JSON.parse(row.dataset.extra || '{}');
+        const action = {
+            action: get('action').value,
+            label: get('label').value.trim(),
+            url: get('url').value.trim(),
+            clear: get('clear').checked,
+            ...Object.fromEntries(Object.entries(extra).filter(([, v]) => v != null)),
+        };
+        const method = get('method').value.trim();
+        if (method) action.method = method.toUpperCase();
+        return action;
+    }).filter(a => a.label || a.url);
+
+    const tags = val('tags').split(',').map(t => t.trim()).filter(Boolean);
+    const template = {
+        title: val('title') || undefined,
+        message: val('message') || undefined,
+        click: val('click') || undefined,
+        icon: val('icon') || undefined,
+        priority: parseInt(val('priority')) || undefined,
+        tags: tags.length ? tags : undefined,
+        markdown: card.querySelector('[data-field="markdown"]').checked || undefined,
+        actions: actions.length ? actions : undefined,
+    };
+
+    return {
+        name: val('name'),
+        type: val('type'),
+        url: val('url'),
+        disabled: !card.querySelector('[data-field="enabled"]').checked,
+        // Every box ticked means "all events", which also covers events added later.
+        events: checkedEvents.length === notificationEvents.length ? [] : checkedEvents,
+        token: val('token') || undefined,
+        username: val('username') || undefined,
+        password: card.querySelector('[data-field="password"]').value || undefined,
+        attachment: val('type') === 'ntfy' ? val('attachment') : undefined,
+        headers: parseJSONField(card, 'headers', `Webhook "${name}" headers`),
+        template,
+        event_templates: parseJSONField(card, 'event_templates', `Webhook "${name}" per-event overrides`),
+    };
+}
+
+function collectNotificationSettings() {
+    const threshold = parseInt(document.getElementById('notifyPendingThreshold').value);
+    return {
+        individual_videos: document.getElementById('notifyIndividualVideos').checked,
+        app_url: document.getElementById('notifyAppURL').value.trim(),
+        repeat_cooldown: document.getElementById('notifyRepeatCooldown').value.trim() || '6h0m0s',
+        pending_summary_threshold: threshold > 0 ? threshold : 5,
+        webhooks: [...document.querySelectorAll('#webhooksList .webhook-card')].map(collectWebhookCard),
+    };
+}
+
+async function testWebhookCard(card, btn) {
+    const result = card.querySelector('.test-result');
+    let webhook;
+    try {
+        webhook = collectWebhookCard(card);
+    } catch (error) {
+        showToast(error.message, true);
+        return;
+    }
+    btn.disabled = true;
+    result.className = 'small align-self-center me-auto test-result text-muted';
+    result.textContent = 'Sending...';
+    try {
+        const response = await fetch(`${API_BASE}/notifications/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ webhook }),
+        });
+        const data = await response.json();
+        const r = data.success && data.data.results && data.data.results[0];
+        if (r && r.ok) {
+            result.className = 'small align-self-center me-auto test-result text-success';
+            result.textContent = 'Test notification sent';
+        } else {
+            result.className = 'small align-self-center me-auto test-result text-danger';
+            result.textContent = (r && r.error) || data.message || 'Test failed';
+        }
+    } catch (error) {
+        result.className = 'small align-self-center me-auto test-result text-danger';
+        result.textContent = 'Test failed';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+document.getElementById('addNtfyWebhookBtn').addEventListener('click', () => {
+    document.getElementById('webhooksList').appendChild(renderWebhookCard({ type: 'ntfy' }));
+    updateWebhookEmptyState();
+});
+document.getElementById('addJSONWebhookBtn').addEventListener('click', () => {
+    document.getElementById('webhooksList').appendChild(renderWebhookCard({ type: 'json' }));
+    updateWebhookEmptyState();
+});

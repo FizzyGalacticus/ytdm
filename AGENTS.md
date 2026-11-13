@@ -11,13 +11,14 @@
 
 Primary runtime artifacts:
 
-- `data/config.json`: application config
-- `data/data.json`: channels/videos state
+- `data/config.json`: application config (including notification webhooks)
+- `data/data.db`: channels/videos state in SQLite (default), or an optional PostgreSQL database selected via `YTDM_POSTGRES_*` env vars
 - `downloads/`: downloaded media organized by channel
 
 ## Tech Stack
 
-- Language: Go (standard library only in app code)
+- Language: Go (standard library in app code; see the dependency policy below)
+- Storage: SQLite via `modernc.org/sqlite` (default) or PostgreSQL via `github.com/lib/pq`
 - External runtime dependency: `yt-dlp` (plus optional `ffmpeg`)
 - Frontend: static HTML/JS in `static/`
 - Deployment: Docker / docker-compose / local binary
@@ -27,7 +28,9 @@ Primary runtime artifacts:
 - `main.go`: app entrypoint, startup lifecycle
 - `api.go`: HTTP server + REST endpoints
 - `config.go`: config model and load/save behavior
-- `storage.go`: persistent data/state management
+- `storage/`: persistent data/state management for both SQLite and PostgreSQL
+- `database.go`: backend selection from env vars and the `ytdm migrate-db` command
+- `notify.go`: webhook notifications (event types, ntfy and JSON delivery, templates)
 - `scheduler.go`: periodic jobs
 - `downloader.go`: `yt-dlp` interaction and download flow
 - `updater.go`: `yt-dlp` auto-update logic
@@ -60,7 +63,24 @@ Primary runtime artifacts:
 - Request and convert thumbnails to JPG for media server compatibility
 - Resolve single-video channel directory from yt-dlp uploader metadata (do not hardcode `unknown`)
 
-5. Reconciliation behavior:
+5. Storage backends (SQLite and PostgreSQL):
+- Write storage queries once, in SQLite `?` placeholder style; `storage/db.go` rebinds them for Postgres and binds bools as 0/1
+- Keep both schemas column-for-column identical: flags are `INTEGER` 0/1 and timestamps RFC 3339 `TEXT` on both
+- Every schema change needs a migration with the same version number in both `storage/migrations/sqlite/` and `storage/migrations/postgres/`; `CopyDatabase` relies on matching versions and column names
+- Use `INSERT ... RETURNING id` rather than `LastInsertId` (unsupported by the Postgres driver)
+- New tables must be added to `copyTables` in `storage/copy.go` (and `identityTables` if they auto-increment)
+- Postgres is optional: ytdm must always start. Missing/invalid Postgres settings or an unreachable server fall back to SQLite with a warning (surfaced in `/api/status`); only `migrate-db` treats them as errors
+- A Postgres connection must name its database explicitly (`YTDM_POSTGRES_DATABASE` or the URL path); never rely on libpq defaults. `YTDM_POSTGRES_SCHEMA` optionally moves the tables out of the default schema
+- On Postgres, reads run concurrently but writes are serialized in-process (`storage/db.go`), preserving SQLite's transaction semantics; keep it that way unless every read-then-write transaction is made race-safe
+- Verify storage changes against Postgres too: `YTDM_TEST_POSTGRES_URL=... go test ./storage`
+
+6. Notifications:
+- Webhooks subscribe to typed events (`video.downloaded`, `video.pending`, `download.failed`, `cookies.expired`, `channel.check_failed`), not a single on/off switch
+- Channel events respect the channel's `disable_notifications`; individually tracked video events respect the single global `notifications.individual_videos` switch
+- Failure alerts go through the repeat cooldown; keep new failure events rate-limited the same way
+- Delivery is asynchronous and must never block or fail a download
+
+7. Reconciliation behavior:
 - `ReconcileDownloadedVideos` removes orphaned downloaded-video entries whose files are missing
 - Channel records are durable and not auto-removed as "expired"
 
@@ -71,6 +91,7 @@ Primary runtime artifacts:
 - Config: `GET/PUT /api/config`
 - Cookies: `POST /api/cookies`, `POST /api/cookies/clear`
 - Status: `GET /api/status`
+- Notifications: `POST /api/notifications/test`
 
 When changing request/response types, keep API tests in sync.
 
@@ -106,7 +127,7 @@ docker build -t ytdm .
 1. Keep changes minimal and focused; preserve existing behavior unless explicitly requested.
 2. Prefer extending existing structs/flows over introducing new abstractions in this small flat package layout.
 3. Update/add tests for behavior changes, especially in retention, pruning, scheduling, and API payloads.
-4. Avoid introducing non-stdlib Go dependencies unless explicitly justified.
+4. Use as few third-party dependencies as possible. Prefer the standard library; add a Go module only when the alternative is reimplementing something substantial (such as a database driver), pick the option with the fewest transitive dependencies, and justify it in the change. The same applies to frontend libraries in `static/`.
 5. Treat `data/` runtime files as user state; do not hardcode local machine assumptions.
 6. Preserve backwards compatibility for config fields and API JSON where practical.
 7. When behavior or API changes are made:

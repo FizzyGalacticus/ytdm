@@ -89,6 +89,20 @@
             opacity: 0.8;
             text-decoration: underline;
         }
+        .webhook-card {
+            border: 1px solid #495057;
+            border-radius: 0.5rem;
+            background-color: #24292f;
+            padding: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+        .webhook-card.disabled-hook {
+            opacity: 0.65;
+        }
+        .webhook-card textarea {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.8rem;
+        }
     </style>
 </head>
 <body>
@@ -197,6 +211,14 @@
                                         <input class="form-check-input" type="checkbox" id="channelAutoDownload" checked>
                                         <label class="form-check-label" for="channelAutoDownload" title="When unchecked, new videos are tracked and listed but not downloaded automatically — you can download them individually from the channel view">
                                             <small>Auto-download new videos</small>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="channelNotify" checked>
+                                        <label class="form-check-label" for="channelNotify" title="Send webhook notifications for this channel's events (new downloads, pending videos, failures)">
+                                            <small>Send notifications</small>
                                         </label>
                                     </div>
                                 </div>
@@ -450,6 +472,61 @@
                                     </div>
                                 </div>
 
+                                <!-- Notifications collapsible section -->
+                                <div class="col-12">
+                                    <button class="btn btn-outline-secondary btn-sm" type="button"
+                                            data-bs-toggle="collapse" data-bs-target="#notificationSettings"
+                                            aria-expanded="false" aria-controls="notificationSettings">
+                                        <i class="bi bi-bell me-1"></i>Notifications
+                                    </button>
+                                    <div class="collapse mt-3" id="notificationSettings">
+                                        <div class="border border-secondary rounded p-3">
+                                            <div class="row g-3">
+                                                <div class="col-md-4">
+                                                    <div class="form-check form-switch mt-md-4">
+                                                        <input class="form-check-input" type="checkbox" id="notifyIndividualVideos">
+                                                        <label class="form-check-label" for="notifyIndividualVideos">Notify for individually tracked videos</label>
+                                                    </div>
+                                                    <small class="text-muted">Channels have their own toggle in each channel's settings.</small>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label for="notifyAppURL" class="form-label">ytdm public URL</label>
+                                                    <input type="url" class="form-control" id="notifyAppURL" placeholder="https://ytdm.example.com">
+                                                    <small class="text-muted">Available in templates as <code>{{.AppURL}}</code></small>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label for="notifyRepeatCooldown" class="form-label">Repeat alerts after</label>
+                                                    <input type="text" class="form-control" id="notifyRepeatCooldown" placeholder="6h0m0s">
+                                                    <small class="text-muted">Failures &amp; cookies</small>
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label for="notifyPendingThreshold" class="form-label">Summarize at</label>
+                                                    <input type="number" class="form-control" id="notifyPendingThreshold" min="1">
+                                                    <small class="text-muted">New pending per scan</small>
+                                                </div>
+
+                                                <div class="col-12">
+                                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                                        <h6 class="mb-0">Webhooks</h6>
+                                                        <div>
+                                                            <button type="button" class="btn btn-sm btn-outline-info me-2" id="addNtfyWebhookBtn"><i class="bi bi-plus-lg"></i> ntfy</button>
+                                                            <button type="button" class="btn btn-sm btn-outline-info" id="addJSONWebhookBtn"><i class="bi bi-plus-lg"></i> JSON webhook</button>
+                                                        </div>
+                                                    </div>
+                                                    <div id="webhooksList"></div>
+                                                    <small class="text-muted">
+                                                        Templates use Go template syntax with fields such as
+                                                        <code>{{.Title}}</code>, <code>{{.ChannelName}}</code>, <code>{{.VideoID}}</code>,
+                                                        <code>{{.VideoURL}}</code>, <code>{{.ThumbnailURL}}</code>, <code>{{.ChannelURL}}</code>,
+                                                        <code>{{.Error}}</code>, <code>{{.Count}}</code> and <code>{{.AppURL}}</code>.
+                                                        Leave a field blank to use the built-in default for each event.
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="col-12">
                                     <button type="submit" class="btn btn-success"><i class="bi bi-save"></i> Save Configuration</button>
                                 </div>
@@ -562,6 +639,14 @@
                                 <input class="form-check-input" type="checkbox" id="editChannelAutoDownload">
                                 <label class="form-check-label" for="editChannelAutoDownload" title="When unchecked, new videos are tracked and listed but not downloaded automatically — you can download them individually from the channel view">
                                     Auto-download new videos
+                                </label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editChannelNotify">
+                                <label class="form-check-label" for="editChannelNotify" title="Send webhook notifications for this channel's events (new downloads, pending videos, failures)">
+                                    Send notifications
                                 </label>
                             </div>
                         </div>

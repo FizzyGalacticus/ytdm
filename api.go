@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -58,6 +59,7 @@ func StartAPIServer(ctx context.Context, config *Config, store *storage.Storage,
 	mux.HandleFunc("/api/cookies/clear", api.handleClearCookies)
 	mux.HandleFunc("/api/status", api.handleStatus)
 	mux.HandleFunc("/api/logs", api.handleLogs)
+	mux.HandleFunc("/api/notifications/test", api.handleNotificationTest)
 
 	// Static file server from embedded files
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -332,6 +334,9 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		VideoFormat      string    `json:"video_format"`
 		DownloadShorts   bool      `json:"download_shorts"`
 		SkipAutoDownload bool      `json:"skip_auto_download"`
+		// Pointer so clients that predate the field don't silently re-enable
+		// notifications for a channel that opted out.
+		DisableNotifications *bool `json:"disable_notifications"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -342,6 +347,12 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 	if err := api.storage.UpdateChannel(id, updateData.RetentionDays, updateData.DisablePruning, updateData.CutoffDate, updateData.VideoQuality, updateData.VideoFormat, updateData.DownloadShorts, updateData.SkipAutoDownload); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel: %v", err))
 		return
+	}
+	if updateData.DisableNotifications != nil {
+		if err := api.storage.SetChannelNotificationsDisabled(id, *updateData.DisableNotifications); err != nil {
+			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel notifications: %v", err))
+			return
+		}
 	}
 
 	logScopef("channel", id, id, "Channel updated via API: %s", id)
@@ -405,6 +416,9 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 			}
 		}
 		logScopef("channel", ch.ID, ch.Name, "Manual download completed for video %s (%s)", fv.ID, fv.Title)
+		ev := downloadedEvent(result, fv.ID, fv.Title, fv.PublishedAt)
+		ev.ChannelID, ev.ChannelName = ch.ID, ch.Name
+		notifyChannelEvent(api.config, api.storage, ev, "")
 	}()
 
 	logScopef("channel", ch.ID, ch.Name, "Manual download queued for video %s (%s)", fv.ID, fv.Title)
@@ -890,6 +904,9 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video s
 			}
 		}
 		logScopef("channel", channelID, channelName, "Manually added video downloaded under channel: %s (%s)", feedVideo.ID, feedVideo.Title)
+		ev := downloadedEvent(result, feedVideo.ID, feedVideo.Title, feedVideo.PublishedAt)
+		ev.ChannelID, ev.ChannelName = channelID, channelName
+		notifyChannelEvent(api.config, api.storage, ev, "")
 	}()
 
 	logScopef("channel", channelID, channelName, "Video added via API under tracked channel: %s (%s)", feedVideo.ID, feedVideo.Title)
@@ -997,6 +1014,8 @@ func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 			"restrict_filenames":               api.config.YtDlp.RestrictFilenames,
 			"cache_dir":                        api.config.YtDlp.CacheDir,
 		},
+		"notifications":       snapshotNotifications(api.config),
+		"notification_events": NotificationEvents,
 	}
 	api.sendSuccess(w, configData)
 }
@@ -1062,6 +1081,27 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 		if val, ok := ytDlpRaw["cache_dir"].(string); ok {
 			api.config.YtDlp.CacheDir = val
 		}
+	}
+
+	if raw, ok := updates["notifications"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			api.sendError(w, http.StatusBadRequest, "Invalid notifications settings")
+			return
+		}
+		var nc NotificationsConfig
+		if err := json.Unmarshal(encoded, &nc); err != nil {
+			api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid notifications settings: %v", err))
+			return
+		}
+		applyNotificationDefaults(&nc)
+		if err := validateNotificationsConfig(nc); err != nil {
+			api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid notifications settings: %v", err))
+			return
+		}
+		api.config.Lock()
+		api.config.Notifications = nc
+		api.config.Unlock()
 	}
 
 	// Save config
@@ -1163,6 +1203,10 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"yt_dlp_version":   getYtDlpVersion(api.config.YtDlp.Path),
 		"app_commit":       getAppCommit(),
 		"app_commit_short": getShortAppCommit(),
+		"database":         databaseStatus.Backend,
+	}
+	if databaseStatus.Warning != "" {
+		status["database_warning"] = databaseStatus.Warning
 	}
 	api.sendSuccess(w, status)
 }
@@ -1222,4 +1266,73 @@ func extractIDFromURL(url string) string {
 		return lastPart
 	}
 	return url
+}
+
+// handleNotificationTest sends a test notification. The body may carry a "webhook"
+// object (to test unsaved settings from the UI) or an "index" into the saved webhooks;
+// an empty body tests every saved webhook, including disabled ones. The test uses the
+// most recently downloaded video as sample data so thumbnails and actions show up.
+func (api *APIServer) handleNotificationTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var body struct {
+		Webhook *WebhookConfig `json:"webhook"`
+		Index   *int           `json:"index"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			api.sendError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+	}
+
+	nc := snapshotNotifications(api.config)
+	var targets []WebhookConfig
+	switch {
+	case body.Webhook != nil:
+		check := nc
+		check.Webhooks = []WebhookConfig{*body.Webhook}
+		if err := validateNotificationsConfig(check); err != nil {
+			api.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		targets = check.Webhooks
+	case body.Index != nil:
+		if *body.Index < 0 || *body.Index >= len(nc.Webhooks) {
+			api.sendError(w, http.StatusBadRequest, "Webhook index out of range")
+			return
+		}
+		targets = []WebhookConfig{nc.Webhooks[*body.Index]}
+	default:
+		targets = nc.Webhooks
+	}
+	if len(targets) == 0 {
+		api.sendError(w, http.StatusBadRequest, "No webhooks configured")
+		return
+	}
+
+	ev := sampleNotificationEvent(api.storage)
+	if ev.VideoID != "" && ev.ChannelName != "" {
+		dl := NewDownloader(api.config)
+		ev.ThumbnailPath = dl.findLocalThumbnailForVideo(filepath.Join(api.config.DownloadDir, sanitizeFilename(ev.ChannelName)), ev.VideoID)
+	}
+	errs := notifier.SendNow(nc, targets, ev)
+
+	type result struct {
+		Name  string `json:"name"`
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	results := make([]result, len(targets))
+	allOK := true
+	for i, t := range targets {
+		results[i] = result{Name: t.label(), OK: errs[i] == nil}
+		if errs[i] != nil {
+			results[i].Error = errs[i].Error()
+			allOK = false
+		}
+	}
+	api.sendSuccess(w, map[string]any{"ok": allOK, "results": results})
 }

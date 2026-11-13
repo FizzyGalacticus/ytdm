@@ -159,6 +159,11 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store
 	if err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Download failed for video %s (%s): %v", req.VideoID, req.VideoTitle, err)
 		_ = store.SetChannelError(req.ChannelID, fmt.Sprintf("download failed for %s: %v", req.VideoID, err))
+		notifyChannelEvent(downloader.config, store, NotificationEvent{
+			Event: EventDownloadFailed, ChannelID: req.ChannelID, ChannelName: req.ChannelName,
+			VideoID: req.VideoID, Title: req.VideoTitle, PublishDate: req.PublishTime,
+			Error: firstLines(err.Error(), 3, 400),
+		}, EventDownloadFailed+":"+req.VideoID)
 		return
 	}
 
@@ -170,6 +175,10 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store
 		} else if result.IsTooShort {
 			logScopef("channel", req.ChannelID, req.ChannelName, "Video %s (%s) is under 2 minutes: flagging for manual download only", req.VideoID, req.VideoTitle)
 			_ = store.MarkFeedVideoManualOnly(req.ChannelID, req.VideoID)
+			notifyChannelEvent(downloader.config, store, NotificationEvent{
+				Event: EventVideoPending, ChannelID: req.ChannelID, ChannelName: req.ChannelName,
+				VideoID: req.VideoID, Title: req.VideoTitle, PublishDate: req.PublishTime, Count: 1,
+			}, EventVideoPending+":"+req.VideoID)
 		} else {
 			logScopef("channel", req.ChannelID, req.ChannelName, "Skipped video %s (%s): %s", req.VideoID, req.VideoTitle, result.SkipReason)
 		}
@@ -187,6 +196,10 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store
 	}
 	_ = store.ClearChannelError(req.ChannelID)
 	logScopef("channel", req.ChannelID, req.ChannelName, "Downloaded video %s (%s)", req.VideoID, req.VideoTitle)
+
+	ev := downloadedEvent(result, req.VideoID, req.VideoTitle, req.PublishTime)
+	ev.ChannelID, ev.ChannelName = req.ChannelID, req.ChannelName
+	notifyChannelEvent(downloader.config, store, ev, "")
 }
 
 func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, store *storage.Storage, downloader *Downloader) {
@@ -261,6 +274,10 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 	if err != nil {
 		logScopef("video", vid.ID, vid.Title, "Failed to download video %s: %v", vid.Title, err)
 		_ = store.SetVideoError(vid.ID, err.Error())
+		notifyVideoEvent(downloader.config, NotificationEvent{
+			Event: EventDownloadFailed, VideoID: vid.ID, Title: vid.Title, VideoURL: vid.URL,
+			ChannelName: channelName, Error: firstLines(err.Error(), 3, 400),
+		}, EventDownloadFailed+":"+vid.ID)
 		return
 	}
 
@@ -305,6 +322,10 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 
 	_ = store.ClearVideoError(vid.ID)
 	logScopef("video", vid.ID, vid.Title, "Finished video %s (downloaded)", vid.Title)
+
+	ev := downloadedEvent(result, downloadedVideoID, downloadedTitle, publishTime)
+	ev.ChannelName = channelName
+	notifyVideoEvent(downloader.config, ev, "")
 }
 
 // runChannelMonitor is a long-running goroutine for a single channel.
@@ -462,6 +483,11 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 	}
 	if feedErr != nil {
 		_ = store.SetChannelError(ch.ID, feedErr.Error())
+		notifyChannelEvent(downloader.config, store, NotificationEvent{
+			Event: EventChannelCheckFailed, ChannelID: ch.ID, ChannelName: ch.Name,
+			ChannelURL: ch.URL, ChannelThumbnailURL: ch.ThumbnailURL,
+			Error: firstLines(feedErr.Error(), 3, 400),
+		}, EventChannelCheckFailed+":"+ch.ID)
 		return true
 	}
 
@@ -525,7 +551,17 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 
 	// Track all newly-discovered videos in FeedVideos so they are visible in the UI
 	// regardless of whether auto-download is enabled.
+	var alreadyPending map[string]VideoInfo
+	if ch.SkipAutoDownload {
+		alreadyPending = pendingFeedVideos(store, ch.ID)
+	}
+	var newPending []VideoInfo
 	for _, video := range videosToDownload {
+		if ch.SkipAutoDownload {
+			if _, seen := alreadyPending[video.ID]; !seen {
+				newPending = append(newPending, video)
+			}
+		}
 		fv := storage.FeedVideo{
 			ID:          video.ID,
 			Title:       video.Title,
@@ -557,6 +593,7 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 
 	if ch.SkipAutoDownload {
 		logScopef("channel", ch.ID, ch.Name, "Auto-download disabled: %d video(s) tracked in feed, skipping download", len(videosToDownload))
+		notifyNewPendingVideos(downloader.config, store, ch, newPending)
 		doChannelCleanup(ctx, ch, store, downloader)
 		return true
 	}
@@ -933,4 +970,32 @@ func getDefaultRetentionDays(d *Downloader) int {
 	d.config.RLock()
 	defer d.config.RUnlock()
 	return d.config.RetentionDays
+}
+
+// notifyNewPendingVideos announces feed entries a channel picked up but will not
+// download automatically. A scan that finds many at once (typically a channel's first
+// backlog) sends one summary instead of a burst.
+func notifyNewPendingVideos(cfg *Config, store *storage.Storage, ch storage.Channel, videos []VideoInfo) {
+	if len(videos) == 0 {
+		return
+	}
+	threshold := snapshotNotifications(cfg).PendingSummaryThreshold
+	if threshold <= 0 {
+		threshold = defaultPendingSummaryThreshold
+	}
+	base := NotificationEvent{
+		Event: EventVideoPending, ChannelID: ch.ID, ChannelName: ch.Name,
+		ChannelURL: ch.URL, ChannelThumbnailURL: ch.ThumbnailURL,
+	}
+	if len(videos) >= threshold {
+		ev := base
+		ev.Count = len(videos)
+		notifyChannelEvent(cfg, store, ev, "")
+		return
+	}
+	for _, v := range videos {
+		ev := base
+		ev.VideoID, ev.Title, ev.PublishDate, ev.Count = v.ID, v.Title, v.PublishTime, 1
+		notifyChannelEvent(cfg, store, ev, "")
+	}
 }
