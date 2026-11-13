@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Dialect identifies which SQL backend a Storage talks to.
@@ -20,22 +21,31 @@ const (
 // to `$1, $2, ...` and binds Go bools as 0/1, since the shared schema stores flags as
 // INTEGER on both backends (database/sql already scans 0/1 back into a bool).
 //
-// Concurrency: SQLite runs on a single connection, so every statement and transaction
-// is serialized. On Postgres, reads run in parallel across the connection pool (the
-// main performance win: UI polling, feed checks, and download workers no longer queue
-// behind one another), while writes still go through writeMu one at a time. Several
-// storage transactions read a row and then write based on what they saw (e.g. "insert
-// the video unless it exists"); serializing writes keeps exactly the semantics they
-// were written against on SQLite, instead of racing into unique-key errors. ytdm runs
-// as a single process, so an in-process lock is sufficient.
+// Concurrency: writes (Exec and transactions) go through writeMu one at a time on both
+// backends. On SQLite that changes nothing (its single connection serializes everything
+// anyway). On Postgres, reads run in parallel across the connection pool (the main
+// performance win: UI polling, feed checks, and download workers no longer queue behind
+// one another), while serialized writes keep exactly the semantics the storage
+// transactions were written against: several of them read a row and then write based on
+// what they saw ("insert the video unless it exists"), which would otherwise race into
+// unique-key errors. ytdm runs as a single process, so an in-process lock is enough.
+//
+// The underlying database can be swapped while the app runs (see Storage.MigrateTo):
+// holding writeMu stops all writes, and a writer that was waiting picks up the new
+// backend once it gets the lock.
 type dbConn struct {
-	db      *sql.DB
-	dialect Dialect
-	writeMu *sync.Mutex // nil for SQLite, whose single connection already serializes
+	cur     atomic.Pointer[backend]
+	writeMu sync.Mutex
 }
 
-// dbTx is the transaction counterpart of dbConn. On Postgres it holds the connection's
-// write lock from Begin until Commit or Rollback.
+// backend is one open database.
+type backend struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+// dbTx is the transaction counterpart of dbConn. It holds the write lock from Begin
+// until Commit or Rollback.
 type dbTx struct {
 	tx      *sql.Tx
 	dialect Dialect
@@ -43,17 +53,21 @@ type dbTx struct {
 }
 
 func newDBConn(db *sql.DB, dialect Dialect) *dbConn {
-	c := &dbConn{db: db, dialect: dialect}
-	if dialect == DialectPostgres {
-		c.writeMu = &sync.Mutex{}
-	}
+	c := &dbConn{}
+	c.cur.Store(&backend{db: db, dialect: dialect})
 	return c
 }
 
+func (c *dbConn) backend() *backend {
+	return c.cur.Load()
+}
+
+// Dialect reports the current backend's dialect.
+func (c *dbConn) Dialect() Dialect {
+	return c.backend().dialect
+}
+
 func (c *dbConn) lockWrites() func() {
-	if c.writeMu == nil {
-		return func() {}
-	}
 	c.writeMu.Lock()
 	var once sync.Once
 	return func() { once.Do(c.writeMu.Unlock) }
@@ -63,31 +77,35 @@ func (c *dbConn) lockWrites() func() {
 func (c *dbConn) Exec(query string, args ...any) (sql.Result, error) {
 	unlock := c.lockWrites()
 	defer unlock()
-	return c.db.Exec(rebind(c.dialect, query), bindArgs(c.dialect, args)...)
+	b := c.backend()
+	return b.db.Exec(rebind(b.dialect, query), bindArgs(b.dialect, args)...)
 }
 
 func (c *dbConn) Query(query string, args ...any) (*sql.Rows, error) {
-	return c.db.Query(rebind(c.dialect, query), bindArgs(c.dialect, args)...)
+	b := c.backend()
+	return b.db.Query(rebind(b.dialect, query), bindArgs(b.dialect, args)...)
 }
 
 func (c *dbConn) QueryRow(query string, args ...any) *sql.Row {
-	return c.db.QueryRow(rebind(c.dialect, query), bindArgs(c.dialect, args)...)
+	b := c.backend()
+	return b.db.QueryRow(rebind(b.dialect, query), bindArgs(b.dialect, args)...)
 }
 
-// Begin starts a transaction. Transactions are used for writes, so on Postgres this
-// waits for the write lock and holds it until Commit or Rollback.
+// Begin starts a transaction. Transactions are used for writes, so this waits for the
+// write lock and holds it until Commit or Rollback.
 func (c *dbConn) Begin() (*dbTx, error) {
 	unlock := c.lockWrites()
-	tx, err := c.db.Begin()
+	b := c.backend()
+	tx, err := b.db.Begin()
 	if err != nil {
 		unlock()
 		return nil, err
 	}
-	return &dbTx{tx: tx, dialect: c.dialect, release: unlock}, nil
+	return &dbTx{tx: tx, dialect: b.dialect, release: unlock}, nil
 }
 
 func (c *dbConn) Close() error {
-	return c.db.Close()
+	return c.backend().db.Close()
 }
 
 func (t *dbTx) Exec(query string, args ...any) (sql.Result, error) {

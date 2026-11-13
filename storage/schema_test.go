@@ -134,3 +134,60 @@ func TestReopenPreservesChildRowsAcrossRestart(t *testing.T) {
 		t.Errorf("expected channel cascade to clear channel_sources/channel_videos, %d rows remain", remainingChildRows)
 	}
 }
+
+// TestMigrationsHealLostRecords: a database whose schema_migrations rows were lost (a
+// partial restore, say) must still open, keep its data, and re-record every version,
+// instead of failing on "table already exists" or "duplicate column".
+func TestMigrationsHealLostRecords(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "heal.db")
+	store, err := NewStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddChannel(Channel{ID: "UCheal", URL: "u", Name: "Heal", DisableNotifications: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`DELETE FROM schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := NewStorage(dbPath)
+	if err != nil {
+		t.Fatalf("reopening with lost migration records: %v", err)
+	}
+	defer reopened.Close()
+	ch, ok := reopened.GetChannel("UCheal")
+	if !ok || !ch.DisableNotifications {
+		t.Errorf("data must survive healing: %+v %v", ch, ok)
+	}
+	migrations, err := embeddedMigrations(reopened.Dialect())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded int
+	if err := reopened.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded != len(migrations) {
+		t.Errorf("expected %d recorded migrations after healing, got %d", len(migrations), recorded)
+	}
+}
+
+// TestMigrationsTolerateNewerVersions: a database migrated by a newer ytdm still opens.
+func TestMigrationsTolerateNewerVersions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "newer.db")
+	store, err := NewStorage(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (9999, 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	reopened, err := NewStorage(dbPath)
+	if err != nil {
+		t.Fatalf("a newer schema version must not block startup: %v", err)
+	}
+	reopened.Close()
+}

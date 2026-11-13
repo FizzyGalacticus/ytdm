@@ -69,7 +69,10 @@ Primary runtime artifacts:
 - Every schema change needs a migration with the same version number in both `storage/migrations/sqlite/` and `storage/migrations/postgres/`; `CopyDatabase` relies on matching versions and column names
 - Use `INSERT ... RETURNING id` rather than `LastInsertId` (unsupported by the Postgres driver)
 - New tables must be added to `copyTables` in `storage/copy.go` (and `identityTables` if they auto-increment)
-- Postgres is optional: ytdm must always start. Missing/invalid Postgres settings or an unreachable server fall back to SQLite with a warning (surfaced in `/api/status`); only `migrate-db` treats them as errors
+- Postgres is optional: ytdm must always start. When Postgres is intended but unusable, ytdm runs on the separate `data/fallback.db` (never the main `data.db`, which may hold stale pre-migration data) with a warning in `/api/status`; the next successful Postgres start merges it in with `storage.ReconcileInto` (add-only, statuses only advance) and renames it to a backup. Only `migrate-db` treats bad settings as errors
+- Backend choice order: `YTDM_DB_DRIVER`, then `data/database.json` (written atomically by migrations and the first Postgres start, recording the Postgres identity), then auto-detect (Postgres only if no `data.db` exists). Never let adding Postgres settings strand SQLite data
+- Migrations between backends (UI `POST /api/database/migrate`, CLI `migrate-db`) default to merge (`storage.MergeDatabase`): upsert by YouTube IDs, keep target-only rows, never regress a video's status. Replace (`CopyDatabase`) wipes the target. The live switch (`Storage.MigrateTo`) holds the write lock during the copy and saves the preference before switching
+- Schema migrations must stay re-runnable: use IF NOT EXISTS / ON CONFLICT DO NOTHING, and add a `migrationProbes` entry for any statement that can't be repeated (e.g. SQLite ADD COLUMN)
 - A Postgres connection must name its database explicitly (`YTDM_POSTGRES_DATABASE` or the URL path); never rely on libpq defaults. `YTDM_POSTGRES_SCHEMA` optionally moves the tables out of the default schema
 - On Postgres, reads run concurrently but writes are serialized in-process (`storage/db.go`), preserving SQLite's transaction semantics; keep it that way unless every read-then-write transaction is made race-safe
 - Verify storage changes against Postgres too: `YTDM_TEST_POSTGRES_URL=... go test ./storage`
@@ -92,6 +95,7 @@ Primary runtime artifacts:
 - Cookies: `POST /api/cookies`, `POST /api/cookies/clear`
 - Status: `GET /api/status`
 - Notifications: `POST /api/notifications/test`
+- Database: `GET /api/database`, `POST /api/database/migrate`
 
 When changing request/response types, keep API tests in sync.
 

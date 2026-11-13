@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -60,6 +61,8 @@ func StartAPIServer(ctx context.Context, config *Config, store *storage.Storage,
 	mux.HandleFunc("/api/status", api.handleStatus)
 	mux.HandleFunc("/api/logs", api.handleLogs)
 	mux.HandleFunc("/api/notifications/test", api.handleNotificationTest)
+	mux.HandleFunc("/api/database", api.handleDatabase)
+	mux.HandleFunc("/api/database/migrate", api.handleDatabaseMigrate)
 
 	// Static file server from embedded files
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -1203,10 +1206,10 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"yt_dlp_version":   getYtDlpVersion(api.config.YtDlp.Path),
 		"app_commit":       getAppCommit(),
 		"app_commit_short": getShortAppCommit(),
-		"database":         databaseStatus.Backend,
+		"database":         dbManager.get().Dialect,
 	}
-	if databaseStatus.Warning != "" {
-		status["database_warning"] = databaseStatus.Warning
+	if w := dbManager.get().Warning; w != "" {
+		status["database_warning"] = w
 	}
 	api.sendSuccess(w, status)
 }
@@ -1335,4 +1338,55 @@ func (api *APIServer) handleNotificationTest(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	api.sendSuccess(w, map[string]any{"ok": allOK, "results": results})
+}
+
+// handleDatabase reports the active database and what it can be migrated to.
+func (api *APIServer) handleDatabase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	api.sendSuccess(w, dbManager.info())
+}
+
+// handleDatabaseMigrate moves the running app to the other database backend. Body:
+// {"to": "postgres"|"sqlite", "mode": "merge"|"replace"}. Writes pause while data is
+// copied; afterwards ytdm keeps running on the new database without a restart.
+func (api *APIServer) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var body struct {
+		To   string `json:"to"`
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		api.sendError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	to, err := parseDialect(body.To)
+	if err != nil || to == "" {
+		api.sendError(w, http.StatusBadRequest, `"to" must be "postgres" or "sqlite"`)
+		return
+	}
+	mode, err := storage.ParseCopyMode(body.Mode)
+	if err != nil {
+		api.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	log.Printf("Database migration to %s (%s) requested via API", to, mode)
+	result, err := dbManager.migrate(api.storage, to, mode)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errMigrationRunning) {
+			status = http.StatusConflict
+		}
+		log.Printf("Database migration to %s failed: %v", to, err)
+		api.sendError(w, status, fmt.Sprintf("Migration failed: %v", err))
+		return
+	}
+	log.Printf("Database migration to %s complete; now running on %s", to, dbManager.get().describe(to))
+	api.sendSuccess(w, map[string]any{"database": dbManager.info(), "result": result})
 }

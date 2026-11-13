@@ -50,11 +50,13 @@ func main() {
 		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
-	databaseStatus.Backend = string(dbConfig.Dialect)
-	databaseStatus.Warning = dbConfig.Warning
 	if dbConfig.Warning != "" {
 		log.Printf("WARNING: %s", dbConfig.Warning)
 	}
+	if dbConfig.Notice != "" {
+		log.Printf("Note: %s", dbConfig.Notice)
+	}
+	dbManager.set(dbConfig)
 	log.Printf("Storage initialized: %s", dbConfig.describe(dbConfig.Dialect))
 
 	// Create downloader for migrations

@@ -241,7 +241,7 @@ func quoteIdent(name string) string {
 
 // Dialect reports which backend this Storage uses.
 func (s *Storage) Dialect() Dialect {
-	return s.db.dialect
+	return s.db.Dialect()
 }
 
 // Close releases the underlying database connection.

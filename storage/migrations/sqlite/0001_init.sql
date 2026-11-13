@@ -1,15 +1,18 @@
+-- Every statement is re-runnable (IF NOT EXISTS / ON CONFLICT DO NOTHING) so a database
+-- whose schema_migrations record was lost heals instead of failing on startup.
+--
 -- schema_migrations itself is bootstrapped by the migration runner (storage/schema.go)
 -- before any migration file is applied, so it is not created here.
 
 -- Extensible source registry. Seeded with YouTube; a future source is just another row.
-CREATE TABLE sources (
+CREATE TABLE IF NOT EXISTS sources (
     id    INTEGER PRIMARY KEY,
     name  TEXT NOT NULL UNIQUE
 );
-INSERT INTO sources (id, name) VALUES (1, 'youtube');
+INSERT INTO sources (id, name) VALUES (1, 'youtube') ON CONFLICT DO NOTHING;
 
 -- A tracked channel/creator: source-agnostic identity + user tracking preferences.
-CREATE TABLE channels (
+CREATE TABLE IF NOT EXISTS channels (
     id                     INTEGER PRIMARY KEY,
     name                   TEXT NOT NULL,
     last_checked           TEXT,                          -- NULL = zero time.Time
@@ -27,17 +30,17 @@ CREATE TABLE channels (
 );
 
 -- Maps a channel to its identity within a specific source (e.g. YouTube's "UC..." ID + URL).
-CREATE TABLE channel_sources (
+CREATE TABLE IF NOT EXISTS channel_sources (
     channel_id         INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     source_id          INTEGER NOT NULL REFERENCES sources(id),
     source_channel_id  TEXT NOT NULL,        -- e.g. "UCxxxx"; the canonical, actively-tracked channel ID
     url                TEXT NOT NULL,
     PRIMARY KEY (source_id, source_channel_id)
 );
-CREATE UNIQUE INDEX ux_channel_sources_channel ON channel_sources(channel_id, source_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_channel_sources_channel ON channel_sources(channel_id, source_id);
 
 -- A specific video: source-agnostic core fields + unified download lifecycle.
-CREATE TABLE videos (
+CREATE TABLE IF NOT EXISTS videos (
     id                     INTEGER PRIMARY KEY,
     title                  TEXT NOT NULL DEFAULT '',
     publish_date           TEXT,
@@ -56,7 +59,7 @@ CREATE TABLE videos (
 );
 
 -- Maps a video to its identity within a specific source.
-CREATE TABLE video_sources (
+CREATE TABLE IF NOT EXISTS video_sources (
     video_id                    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     source_id                   INTEGER NOT NULL REFERENCES sources(id),
     source_video_id             TEXT NOT NULL,  -- YouTube's 11-char video ID
@@ -68,21 +71,21 @@ CREATE TABLE video_sources (
     uploader_source_channel_id  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (source_id, source_video_id)
 );
-CREATE UNIQUE INDEX ux_video_sources_video ON video_sources(video_id, source_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_video_sources_video ON video_sources(video_id, source_id);
 
 -- M:N join; a UNIQUE index on video_id enforces today's real "one channel per video"
 -- invariant while leaving schema room to relax it later if ever needed.
-CREATE TABLE channel_videos (
+CREATE TABLE IF NOT EXISTS channel_videos (
     channel_id  INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
     video_id    INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
     PRIMARY KEY (channel_id, video_id)
 );
-CREATE UNIQUE INDEX ux_channel_videos_video ON channel_videos(video_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_channel_videos_video ON channel_videos(video_id);
 
 -- Override settings that ONLY apply to a video tracked individually (i.e. NOT governed by
 -- a tracked channel's settings). Row existence for a video_id IS the "individually
 -- tracked" signal -- no separate boolean flag needed.
-CREATE TABLE individual_video_tracking (
+CREATE TABLE IF NOT EXISTS individual_video_tracking (
     video_id         INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
     retention_days   INTEGER NOT NULL DEFAULT 0,
     video_quality    TEXT NOT NULL DEFAULT '',
@@ -91,10 +94,10 @@ CREATE TABLE individual_video_tracking (
 );
 
 -- Singleton idempotency marker for the one-time JSON import.
-CREATE TABLE json_import_state (
+CREATE TABLE IF NOT EXISTS json_import_state (
     id           INTEGER PRIMARY KEY CHECK (id = 1),
     imported     INTEGER NOT NULL DEFAULT 0,
     imported_at  TEXT,
     source_path  TEXT
 );
-INSERT INTO json_import_state (id, imported) VALUES (1, 0);
+INSERT INTO json_import_state (id, imported) VALUES (1, 0) ON CONFLICT DO NOTHING;

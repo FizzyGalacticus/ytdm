@@ -1232,6 +1232,7 @@ document.getElementById('clearLogFilterBtn').addEventListener('click', () => {
 loadStatus();
 loadChannels().then(loadVideos);
 loadConfig();
+loadDatabaseInfo();
 loadLogs();
 
 // Refresh data every 30 seconds
@@ -1597,3 +1598,119 @@ document.getElementById('addJSONWebhookBtn').addEventListener('click', () => {
     document.getElementById('webhooksList').appendChild(renderWebhookCard({ type: 'json' }));
     updateWebhookEmptyState();
 });
+
+
+// ---- Database migration ----
+
+let databaseInfo = null;
+
+function dbLabel(d) {
+    return d === 'postgres' ? 'PostgreSQL' : 'SQLite';
+}
+
+async function loadDatabaseInfo() {
+    try {
+        const response = await fetch(`${API_BASE}/database`);
+        const data = await response.json();
+        if (data.success) {
+            databaseInfo = data.data;
+            renderDatabaseInfo();
+        }
+    } catch (error) {
+        document.getElementById('databaseInfo').textContent = 'Failed to load database status';
+    }
+}
+
+function renderDatabaseInfo() {
+    const info = databaseInfo;
+    const lines = [];
+    const where = info.active === 'postgres' ? info.postgres : info.active_path;
+    lines.push(`<div><strong>Active:</strong> ${escapeHtml(dbLabel(info.active))}${where ? ` <span class="text-muted">${escapeHtml(where)}</span>` : ''}${info.fallback ? ' <span class="badge bg-warning text-dark ms-1">Temporary fallback</span>' : ''}</div>`);
+    if (info.active !== 'postgres') {
+        if (info.postgres_configured) {
+            lines.push(`<div><strong>PostgreSQL:</strong> <span class="text-muted">${escapeHtml(info.postgres)}</span></div>`);
+        } else {
+            lines.push('<div><strong>PostgreSQL:</strong> <span class="text-muted">not configured (set YTDM_POSTGRES_DATABASE and the other YTDM_POSTGRES_* variables, then restart)</span></div>');
+        }
+    } else {
+        lines.push(`<div><strong>SQLite file:</strong> <span class="text-muted">${escapeHtml(info.sqlite_path)}</span></div>`);
+    }
+    if (info.postgres_error) {
+        lines.push(`<div class="text-danger"><i class="bi bi-x-circle me-1"></i>${escapeHtml(info.postgres_error)}</div>`);
+    }
+    if (info.warning) {
+        lines.push(`<div class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>${escapeHtml(info.warning)}</div>`);
+    }
+    if (info.notice) {
+        lines.push(`<div class="text-info"><i class="bi bi-info-circle me-1"></i>${escapeHtml(info.notice)}</div>`);
+    }
+    document.getElementById('databaseInfo').innerHTML = lines.join('');
+
+    const pgBtn = document.getElementById('migrateToPostgresBtn');
+    const sqliteBtn = document.getElementById('migrateToSQLiteBtn');
+    const hints = [];
+    pgBtn.disabled = info.active === 'postgres' || !info.postgres_configured || !!info.postgres_error;
+    sqliteBtn.disabled = info.active === 'sqlite';
+    if (info.pinned_driver) {
+        const other = info.pinned_driver === 'postgres' ? sqliteBtn : pgBtn;
+        other.disabled = true;
+        hints.push(`YTDM_DB_DRIVER=${info.pinned_driver} is set, so switching away from ${dbLabel(info.pinned_driver)} is disabled.`);
+    }
+    if (info.active === 'postgres') {
+        pgBtn.innerHTML = '<i class="bi bi-check-circle"></i> Using PostgreSQL';
+        sqliteBtn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to SQLite';
+    } else {
+        sqliteBtn.innerHTML = info.fallback ? '<i class="bi bi-exclamation-triangle"></i> On temporary SQLite fallback' : '<i class="bi bi-check-circle"></i> Using SQLite';
+        pgBtn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
+    }
+    hints.push('ytdm keeps running during a migration; downloads and edits pause briefly while data is copied. The old database is left untouched.');
+    document.getElementById('migrateHint').textContent = hints.join(' ');
+}
+
+async function migrateDatabase(to) {
+    const mode = document.querySelector('input[name="migrateMode"]:checked').value;
+    const label = dbLabel(to);
+    const explain = mode === 'replace'
+        ? `Everything currently in ${label} will be DELETED and replaced with the data from ${dbLabel(databaseInfo.active)}.`
+        : `Data from ${dbLabel(databaseInfo.active)} will be merged into ${label}, keeping anything ${label} already has.`;
+    if (!confirm(`Migrate to ${label}?\n\n${explain}\n\nytdm then switches to ${label} and keeps using it after restarts.`)) {
+        return;
+    }
+    const buttons = [document.getElementById('migrateToPostgresBtn'), document.getElementById('migrateToSQLiteBtn')];
+    buttons.forEach(b => { b.disabled = true; });
+    const result = document.getElementById('migrateResult');
+    result.className = 'mt-3 small text-muted';
+    result.textContent = `Migrating to ${label}...`;
+    try {
+        const response = await fetch(`${API_BASE}/database/migrate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to, mode }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            const tables = (data.data.result && data.data.result.tables) || [];
+            const pick = (name) => tables.find(t => t.table === name) || { inserted: 0, updated: 0 };
+            const ch = pick('channels');
+            const vid = pick('videos');
+            result.className = 'mt-3 small text-success';
+            result.textContent = `Now running on ${label}. Channels: ${ch.inserted} added, ${ch.updated} updated. Videos: ${vid.inserted} added, ${vid.updated} updated.`;
+            showToast(`Migrated to ${label}`);
+            databaseInfo = data.data.database;
+            renderDatabaseInfo();
+            loadStatus();
+            loadChannels().then(loadVideos);
+        } else {
+            result.className = 'mt-3 small text-danger';
+            result.textContent = data.message || 'Migration failed';
+            renderDatabaseInfo();
+        }
+    } catch (error) {
+        result.className = 'mt-3 small text-danger';
+        result.textContent = 'Migration failed';
+        renderDatabaseInfo();
+    }
+}
+
+document.getElementById('migrateToPostgresBtn').addEventListener('click', () => migrateDatabase('postgres'));
+document.getElementById('migrateToSQLiteBtn').addEventListener('click', () => migrateDatabase('sqlite'));

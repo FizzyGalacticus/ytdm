@@ -153,7 +153,11 @@ ytdm stores channels and videos in SQLite (`data/data.db`) by default and needs 
 | `YTDM_DB_DRIVER` | `sqlite` or `postgres`. Optional: setting any Postgres variable selects Postgres, and `sqlite` forces SQLite even when they are set. |
 | `YTDM_SQLITE_PATH` | SQLite file (default `data/data.db`) |
 
-Postgres is never required. If its settings are incomplete (for example no database name), or the server still can't be reached after about 30 seconds of retries at startup, ytdm logs a warning and runs on SQLite instead. The status bar shows the active database and a *Database fallback* badge when this happens. Fix the settings and restart to switch to Postgres.
+Postgres is never required, and ytdm always starts:
+- **Which database is used:** `YTDM_DB_DRIVER` if set; otherwise the choice saved in `data/database.json` (written by a migration, or the first time ytdm runs on Postgres); otherwise Postgres if it's configured, unless an existing `data/data.db` is present. Adding Postgres settings never strands existing SQLite data: ytdm keeps using it and points you to the migrate button.
+- **Postgres unavailable:** if Postgres is meant to be used but its settings are incomplete, or the server still can't be reached after about 30 seconds of retries, ytdm runs on a temporary `data/fallback.db` and shows a *Database fallback* warning. It deliberately doesn't reuse an old `data.db`, which could hold pre-migration data. When Postgres is back on a later start, anything added during the outage is merged in automatically: new rows are added and video statuses only move forward, nothing is overwritten. The fallback file is then kept as `fallback.db.merged-<timestamp>`.
+- **Connection details changed:** `data/database.json` records which Postgres database (host, port, database, schema) holds the data. If the settings now point at a different database that's empty, ytdm says so in Configuration > Database instead of silently looking like your data is gone.
+- **Schema migrations** run automatically, each in its own transaction, are safe to re-run after a crash or a lost migration record, and are locked so two instances starting together can't collide. A database touched by a newer ytdm version only logs a warning.
 
 The schema is created and migrated automatically on startup for either backend. `config.json` and `cookies.txt` stay files in `data/` either way.
 
@@ -161,21 +165,27 @@ On PostgreSQL, reads run in parallel over a small connection pool (up to 8 conne
 
 ### Moving between SQLite and PostgreSQL
 
-`ytdm migrate-db` copies every channel and video from one backend to the other, keeping IDs, and checks the row counts before committing. Stop the running service first so no writes are missed:
+**From the web UI:** Configuration > Database has *Migrate to PostgreSQL* and *Migrate to SQLite* buttons. The migration runs while ytdm is up: writes pause for a moment while data is copied, then ytdm switches to the new database without a restart and keeps using it after restarts. The old database is left as it was. Choose a mode:
+- **Merge** (default): works whatever the target already holds. Channels and videos are matched by their YouTube IDs; ones only in the target are kept, and for ones in both, the current database's settings win. A video's status never goes backwards (pending < downloaded < pruned), so nothing already downloaded or pruned gets downloaded again. Merging twice is harmless.
+- **Replace:** deletes everything in the target, then copies the current database exactly.
+
+Migrating to Postgres needs its connection settings in the environment (restart after adding them). If `YTDM_DB_DRIVER` is set, the UI won't switch away from that backend, since it would win again on the next start.
+
+**From the command line** (with ytdm stopped):
 
 ```bash
 # SQLite -> PostgreSQL (reads data/data.db, writes to the Postgres from the env vars)
 YTDM_POSTGRES_HOST=db YTDM_POSTGRES_USER=ytdm YTDM_POSTGRES_PASSWORD=secret YTDM_POSTGRES_DATABASE=ytdm \
   ./ytdm migrate-db --to postgres
 
-# PostgreSQL -> SQLite
-YTDM_POSTGRES_URL=postgres://ytdm:secret@db:5432/ytdm ./ytdm migrate-db --to sqlite --sqlite-path data/data.db
+# PostgreSQL -> SQLite, wiping data/data.db first
+YTDM_POSTGRES_URL=postgres://ytdm:secret@db:5432/ytdm ./ytdm migrate-db --to sqlite --mode replace
 
 # In Docker
 docker compose run --rm ytdm ./ytdm migrate-db --to postgres
 ```
 
-The destination must be empty; pass `--overwrite` to replace what's there. The source is only read, so after a successful copy you can switch back at any time (set `YTDM_DB_DRIVER=sqlite`, or remove the Postgres variables). `--sqlite-path` and `--postgres-url` override the environment. Unlike startup, `migrate-db` never falls back: it fails if the Postgres settings are missing or invalid.
+`--mode` is `merge` (default) or `replace` (`--overwrite` is the same as `--mode replace`). The destination becomes the database ytdm opens on its next start. `--sqlite-path` and `--postgres-url` override the environment. Unlike startup, `migrate-db` never falls back: it fails if the Postgres settings are missing or invalid.
 
 ## Notifications
 
@@ -264,6 +274,10 @@ Use **Send test** in the UI (or `POST /api/notifications/test`) to send a sample
 ### Configuration
 - `GET /api/config` - Get configuration (includes `notifications` and the list of `notification_events`)
 - `PUT /api/config` - Update configuration (send a `notifications` object to replace the notification settings)
+
+### Database
+- `GET /api/database` - Active database, Postgres configuration status, and any fallback warning or notice
+- `POST /api/database/migrate` - Migrate the running app to the other database: `{"to": "postgres"|"sqlite", "mode": "merge"|"replace"}`
 
 ### Notifications
 - `POST /api/notifications/test` - Send a test notification. Body: `{"index": 0}` for a saved webhook, `{"webhook": {...}}` for unsaved settings, or empty for every saved webhook

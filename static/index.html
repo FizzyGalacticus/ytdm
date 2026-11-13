@@ -300,6 +300,36 @@
 
             <!-- Configuration Tab -->
             <div class="tab-pane fade" id="config-pane" role="tabpanel" aria-labelledby="config-tab">
+                <div class="card mb-4" id="databaseCard">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-database"></i> Database</h5>
+                        <div id="databaseInfo" class="mb-3 small">Loading...</div>
+                        <div class="row g-3 align-items-start">
+                            <div class="col-lg-7">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="migrateMode" id="migrateModeMerge" value="merge" checked>
+                                    <label class="form-check-label" for="migrateModeMerge">
+                                        <strong>Merge</strong> <span class="text-muted">(recommended)</span><br>
+                                        <small class="text-muted">Keeps whatever the target already has and adds or updates channels and videos from the current database. A video's status never goes backwards, so nothing already downloaded or pruned is downloaded again.</small>
+                                    </label>
+                                </div>
+                                <div class="form-check mt-2">
+                                    <input class="form-check-input" type="radio" name="migrateMode" id="migrateModeReplace" value="replace">
+                                    <label class="form-check-label" for="migrateModeReplace">
+                                        <strong>Replace</strong><br>
+                                        <small class="text-muted">Deletes everything in the target first, then copies the current database exactly.</small>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-lg-5 d-flex flex-column gap-2">
+                                <button type="button" class="btn btn-outline-info" id="migrateToPostgresBtn"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</button>
+                                <button type="button" class="btn btn-outline-info" id="migrateToSQLiteBtn"><i class="bi bi-arrow-right-circle"></i> Migrate to SQLite</button>
+                                <small class="text-muted" id="migrateHint"></small>
+                            </div>
+                        </div>
+                        <div id="migrateResult" class="mt-3 small"></div>
+                    </div>
+                </div>
                 <div class="card mb-4">
                     <div class="card-body">
                         <form id="configForm">

@@ -25,13 +25,17 @@ var identityTables = []string{"channels", "videos"}
 
 // CopyResult reports how many rows CopyDatabase copied per table, in copy order.
 type CopyResult struct {
-	Tables []TableCopyCount
+	Tables []TableCopyCount `json:"tables"`
 }
 
-// TableCopyCount is one table's row count in a CopyResult.
+// TableCopyCount is one table's row counts in a CopyResult. Rows is how many source
+// rows were processed; Inserted and Updated split them by what happened in the
+// destination (a replace inserts everything).
 type TableCopyCount struct {
-	Table string
-	Rows  int64
+	Table    string `json:"table"`
+	Rows     int64  `json:"rows"`
+	Inserted int64  `json:"inserted"`
+	Updated  int64  `json:"updated"`
 }
 
 // CopyDatabase copies every row from src into dst, preserving primary keys, so a SQLite
@@ -43,16 +47,8 @@ type TableCopyCount struct {
 func CopyDatabase(src, dst *Storage, overwrite bool) (CopyResult, error) {
 	var result CopyResult
 
-	srcVersion, err := schemaVersion(src.db)
-	if err != nil {
-		return result, fmt.Errorf("reading source schema version: %w", err)
-	}
-	dstVersion, err := schemaVersion(dst.db)
-	if err != nil {
-		return result, fmt.Errorf("reading destination schema version: %w", err)
-	}
-	if srcVersion != dstVersion {
-		return result, fmt.Errorf("schema versions differ (source %d, destination %d); open both with the same ytdm version", srcVersion, dstVersion)
+	if err := checkSameSchema(src, dst); err != nil {
+		return result, err
 	}
 
 	if !overwrite {
@@ -82,7 +78,7 @@ func CopyDatabase(src, dst *Storage, overwrite bool) (CopyResult, error) {
 		if err != nil {
 			return result, fmt.Errorf("copying table %s: %w", table, err)
 		}
-		result.Tables = append(result.Tables, TableCopyCount{Table: table, Rows: n})
+		result.Tables = append(result.Tables, TableCopyCount{Table: table, Rows: n, Inserted: n})
 	}
 
 	if tx.dialect == DialectPostgres {
