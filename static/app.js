@@ -106,6 +106,42 @@ function formatDate(dateStr) {
 }
 
 // Escape HTML for safe rendering of logs
+// Put an "add" form back to exactly what the page shipped with: empty text fields, each
+// select on its default option, checkboxes at their default state. form.reset() alone
+// isn't enough because browsers may restore or autofill values, which then stick around.
+function resetAddForm(form) {
+    form.reset();
+    for (const el of form.elements) {
+        if (el.type === 'checkbox' || el.type === 'radio') {
+            el.checked = el.defaultChecked;
+        } else if (el.tagName === 'SELECT') {
+            const def = Array.from(el.options).find(o => o.defaultSelected) || el.options[0];
+            el.value = def ? def.value : '';
+        } else if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            el.value = el.defaultValue || '';
+        }
+    }
+}
+
+const ADD_FORM_IDS = ['addChannelForm', 'addVideoForm'];
+
+// Clear the add forms on load and when the browser restores the page from its
+// back/forward cache, so a previously typed URL never reappears.
+function resetAllAddForms() {
+    for (const id of ADD_FORM_IDS) {
+        const form = document.getElementById(id);
+        if (form) resetAddForm(form);
+    }
+}
+window.addEventListener('pageshow', resetAllAddForms);
+
+// Disable a form's submit button while its request is in flight so a slow add (the
+// server may look the video up with yt-dlp first) can't be submitted twice.
+function setFormBusy(form, busy) {
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = busy;
+}
+
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -878,6 +914,7 @@ document.getElementById('clearCookiesBtn').addEventListener('click', async () =>
 // Add channel
 document.getElementById('addChannelForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const form = e.currentTarget;
     const name = document.getElementById('channelName').value;
     const url = document.getElementById('channelURL').value;
     const retention = parseInt(document.getElementById('channelRetention').value) || 0;
@@ -904,6 +941,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
     }
 
+    setFormBusy(form, true);
     try {
         const response = await fetch(`${API_BASE}/channels`, {
             method: 'POST',
@@ -913,7 +951,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         const data = await response.json();
         if (data.success) {
             showToast('Channel added successfully');
-            document.getElementById('addChannelForm').reset();
+            resetAddForm(form);
             loadChannels();
             loadStatus();
         } else {
@@ -921,6 +959,8 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         }
     } catch (error) {
         showToast('Failed to add channel', true);
+    } finally {
+        setFormBusy(form, false);
     }
 });
 
@@ -1040,12 +1080,14 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
 // Add video
 document.getElementById('addVideoForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const form = e.currentTarget;
     const url = document.getElementById('videoURL').value;
     const retention = parseInt(document.getElementById('videoRetention').value) || 0;
     const quality = document.getElementById('videoQuality').value;
     const format = document.getElementById('videoFormat').value; // Empty string = use global default
     const disablePruning = document.getElementById('videoDisablePruning').checked;
 
+    setFormBusy(form, true);
     try {
         const response = await fetch(`${API_BASE}/videos`, {
             method: 'POST',
@@ -1061,7 +1103,7 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
         const data = await response.json();
         if (data.success) {
             showToast('Video added successfully');
-            document.getElementById('addVideoForm').reset();
+            resetAddForm(form);
             loadVideos();
             loadStatus();
         } else {
@@ -1069,6 +1111,8 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
         }
     } catch (error) {
         showToast('Failed to add video', true);
+    } finally {
+        setFormBusy(form, false);
     }
 });
 
