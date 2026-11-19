@@ -509,7 +509,6 @@ async function loadChannels() {
                                     ${pruningText}
                                     ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                     ${ch.disable_notifications ? '<span class="badge bg-secondary ms-2" title="Webhook notifications are off for this channel"><i class="bi bi-bell-slash me-1"></i>Muted</span>' : ''}
-                                    ${ch.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                                     ${errorBadge}<br>
                                     <small class="text-muted">${escapeHtml(ch.url)}</small><br>
                                     <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
@@ -586,7 +585,6 @@ function renderVideoRow(vid) {
                 <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
                 ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${escapeHtml(vid.video_quality)}</span>` : ''}
                 ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${escapeHtml(vid.video_format)}</span>` : ''}
-                ${vid.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                 ${pruningText}
                 ${downloadedText}
                 ${errorBadge}<br>
@@ -648,7 +646,6 @@ const renderVideoGroup = (item, collapseId) => {
                     <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
                     ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${escapeHtml(vid.video_quality)}</span>` : ''}
                     ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${escapeHtml(vid.video_format)}</span>` : ''}
-                ${vid.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                     ${pruningText}
                     ${downloadedText}
                     ${errorBadge}<br>
@@ -1011,7 +1008,6 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const disablePruning = document.getElementById('channelDisablePruning').checked;
     const skipAutoDownload = !document.getElementById('channelAutoDownload').checked;
     const disableNotifications = !document.getElementById('channelNotify').checked;
-    const sponsorBlockMark = document.getElementById('channelSponsorBlock').checked;
 
     const channelData = {
         name,
@@ -1023,7 +1019,6 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
         disable_notifications: disableNotifications,
-        sponsorblock_mark: sponsorBlockMark,
     };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
@@ -1119,7 +1114,6 @@ function openEditChannelModal(id) {
     document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
     document.getElementById('editChannelAutoDownload').checked = !skipAutoDownload;
     document.getElementById('editChannelNotify').checked = !disableNotifications;
-    document.getElementById('editChannelSponsorBlock').checked = !!ch.sponsorblock_mark;
 
     const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
     modal.show();
@@ -1136,7 +1130,6 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
     const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
     const skipAutoDownload = !document.getElementById('editChannelAutoDownload').checked;
     const disableNotifications = !document.getElementById('editChannelNotify').checked;
-    const sponsorBlockMark = document.getElementById('editChannelSponsorBlock').checked;
 
     const updateData = {
         retention_days: retentionDays,
@@ -1146,7 +1139,6 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
         disable_notifications: disableNotifications,
-        sponsorblock_mark: sponsorBlockMark,
     };
 
     // Only include cutoff date if it's set
@@ -1197,7 +1189,6 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
                 disable_pruning: disablePruning,
                 video_quality: quality,
                 video_format: format,
-                sponsorblock_mark: document.getElementById('videoSponsorBlock').checked,
             })
         });
         const data = await response.json();
@@ -1248,7 +1239,6 @@ function openEditVideoModal(id) {
     document.getElementById('editVideoDisablePruning').checked = !!vid.disable_pruning;
     document.getElementById('editVideoQuality').value = vid.video_quality || '';
     document.getElementById('editVideoFormat').value = vid.video_format || '';
-    document.getElementById('editVideoSponsorBlock').checked = !!vid.sponsorblock_mark;
 
     const modal = new bootstrap.Modal(document.getElementById('editVideoModal'));
     modal.show();
@@ -1267,7 +1257,6 @@ document.getElementById('saveVideoEditsBtn').addEventListener('click', async () 
         disable_pruning: disablePruning,
         video_quality: videoQuality,
         video_format: videoFormat,
-        sponsorblock_mark: document.getElementById('editVideoSponsorBlock').checked,
     };
 
     try {

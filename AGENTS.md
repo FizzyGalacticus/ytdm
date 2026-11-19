@@ -84,9 +84,9 @@ Primary runtime artifacts:
 - Delivery is asynchronous and must never block or fail a download
 
 7. Download extras:
-- Subtitles (global `subtitles` config) and SponsorBlock chapter marking (per-entry `sponsorblock_mark`) must never cost a download: when yt-dlp fails because of either, retry without it
+- Subtitles (global `subtitles` config) and SponsorBlock chapter marking (always on) must never cost a download: when yt-dlp fails because of either, retry without it
 - SponsorBlock segments are only ever marked as chapters, never cut (`--sponsorblock-mark`, never `--sponsorblock-remove`)
-- Subtitle files are sidecars (`isSidecarFile`) and keep their `.<lang>.vtt` suffix through renames (`splitPortableFilename`)
+- Subtitle files are sidecars (`isSidecarFile`) and keep their `.<lang>.srt` suffix through renames (`splitPortableFilename`)
 - Download progress comes from yt-dlp `--progress-template` lines with ytdm prefixes, filtered out of the output the downloader inspects
 
 8. Reconciliation behavior:

@@ -117,14 +117,6 @@ func (s *Storage) ClearVideoError(id string) error {
 	return err
 }
 
-// SetVideoSponsorBlockMark toggles SponsorBlock chapter marking for a standalone video.
-func (s *Storage) SetVideoSponsorBlockMark(id string, enabled bool) error {
-	_, err := s.db.Exec(`UPDATE individual_video_tracking SET sponsorblock_mark = ? WHERE video_id = (
-		SELECT video_id FROM video_sources WHERE source_id = ? AND source_video_id = ?
-	)`, enabled, sourceYouTube, id)
-	return err
-}
-
 // Ping checks that the database answers a trivial query, for health checks.
 func (s *Storage) Ping(ctx context.Context) error {
 	return s.db.ping(ctx)

@@ -25,7 +25,7 @@ func seedCopyFixture(t *testing.T, s *Storage) {
 	if err := s.AddChannel(Channel{
 		ID: "UCaaa", URL: "https://www.youtube.com/channel/UCaaa", Name: "Alpha",
 		RetentionDays: 9, DisablePruning: true, CutoffDate: pub, VideoFormat: "mp4",
-		SkipAutoDownload: true, DisableNotifications: true, BacklogScanComplete: true, SponsorBlockMark: true,
+		SkipAutoDownload: true, DisableNotifications: true, BacklogScanComplete: true,
 		DownloadedVideos: []DownloadedVideo{{ID: "vid00000001", Title: "One", DownloadDate: pub, PublishDate: pub, DisablePruning: true}},
 		FeedVideos:       []FeedVideo{{ID: "vid00000002", Title: "Two", URL: "https://www.youtube.com/watch?v=vid00000002", PublishedAt: pub, AddedAt: pub, ManualDownloadOnly: true}},
 		PrunedVideos:     []PrunedVideo{{ID: "vid00000003", PublishDate: pub}},
@@ -37,7 +37,7 @@ func seedCopyFixture(t *testing.T, s *Storage) {
 	}
 	if err := s.AddVideo(Video{
 		ID: "vid00000004", URL: "https://www.youtube.com/watch?v=vid00000004", Title: "Solo",
-		AddedDate: pub, RetentionDays: 3, Uploader: "Someone", UploaderID: "UCzzz", SponsorBlockMark: true,
+		AddedDate: pub, RetentionDays: 3, Uploader: "Someone", UploaderID: "UCzzz",
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -151,12 +151,12 @@ func importChannel(tx *dbTx, ch Channel) error {
 	if err := tx.QueryRow(`INSERT INTO channels (
 		name, last_checked, retention_days, disable_pruning, cutoff_date, video_quality,
 		video_format, download_shorts, skip_auto_download, last_error, last_error_time,
-		thumbnail_url, backlog_scan_complete, disable_notifications, sponsorblock_mark
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+		thumbnail_url, backlog_scan_complete, disable_notifications
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		ch.Name, timeToNull(ch.LastChecked), ch.RetentionDays, ch.DisablePruning,
 		timeToNull(ch.CutoffDate), ch.VideoQuality, ch.VideoFormat, ch.DownloadShorts,
 		ch.SkipAutoDownload, ch.LastError, timeToNull(ch.LastErrorTime), ch.ThumbnailURL,
-		ch.BacklogScanComplete, ch.DisableNotifications, ch.SponsorBlockMark).Scan(&channelPK); err != nil {
+		ch.BacklogScanComplete, ch.DisableNotifications).Scan(&channelPK); err != nil {
 		return err
 	}
 
@@ -328,8 +328,8 @@ func importStandaloneVideo(tx *dbTx, v Video) error {
 		return err
 	}
 
-	_, err = tx.Exec(`INSERT INTO individual_video_tracking (video_id, retention_days, video_quality, video_format, download_shorts, sponsorblock_mark)
-		VALUES (?, ?, ?, ?, ?, ?)`, videoPK, v.RetentionDays, v.VideoQuality, v.VideoFormat, v.DownloadShorts, v.SponsorBlockMark)
+	_, err = tx.Exec(`INSERT INTO individual_video_tracking (video_id, retention_days, video_quality, video_format, download_shorts)
+		VALUES (?, ?, ?, ?, ?)`, videoPK, v.RetentionDays, v.VideoQuality, v.VideoFormat, v.DownloadShorts)
 	return err
 }
 

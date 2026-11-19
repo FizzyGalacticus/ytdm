@@ -237,14 +237,6 @@
                                         </label>
                                     </div>
                                 </div>
-                                <div class="col-md-3">
-                                    <div class="form-check mt-2">
-                                        <input class="form-check-input" type="checkbox" id="channelSponsorBlock">
-                                        <label class="form-check-label" for="channelSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
-                                            <small>Mark SponsorBlock chapters</small>
-                                        </label>
-                                    </div>
-                                </div>
                             </div>
                         </form>
                     </div>
@@ -305,14 +297,6 @@
                                         <input class="form-check-input" type="checkbox" id="videoDisablePruning">
                                         <label class="form-check-label" for="videoDisablePruning">
                                             <small>Keep indefinitely (disable pruning)</small>
-                                        </label>
-                                    </div>
-                                </div>
-                                <div class="col-md-3">
-                                    <div class="form-check mt-2">
-                                        <input class="form-check-input" type="checkbox" id="videoSponsorBlock">
-                                        <label class="form-check-label" for="videoSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
-                                            <small>Mark SponsorBlock chapters</small>
                                         </label>
                                     </div>
                                 </div>
@@ -436,7 +420,7 @@
                                     <label class="form-label d-block">Subtitles</label>
                                     <div class="form-check mt-2">
                                         <input class="form-check-input" type="checkbox" id="subtitlesEnabled">
-                                        <label class="form-check-label" for="subtitlesEnabled" title="Save subtitle files (.vtt) next to new downloads. Media servers like Jellyfin pick them up automatically.">
+                                        <label class="form-check-label" for="subtitlesEnabled" title="Save subtitle files (.srt) next to new downloads. Media servers like Jellyfin pick them up automatically.">
                                             Download subtitles
                                         </label>
                                     </div>
@@ -736,15 +720,6 @@
                                 </label>
                             </div>
                         </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="editChannelSponsorBlock">
-                                <label class="form-check-label" for="editChannelSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
-                                    Mark SponsorBlock chapters
-                                </label>
-                                <div class="form-text">Adds chapters for sponsor reads, intros and similar segments in new downloads. Nothing is cut from the video.</div>
-                            </div>
-                        </div>
                     </form>
                 </div>
                 <div class="modal-footer border-secondary">
@@ -802,15 +777,6 @@
                                 <option value="webm">WebM</option>
                                 <option value="mkv">MKV</option>
                             </select>
-                        </div>
-                        <div class="mb-3">
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="editVideoSponsorBlock">
-                                <label class="form-check-label" for="editVideoSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
-                                    Mark SponsorBlock chapters
-                                </label>
-                                <div class="form-text">Applies to the next download of this video. Nothing is cut from the video.</div>
-                            </div>
                         </div>
                     </form>
                 </div>

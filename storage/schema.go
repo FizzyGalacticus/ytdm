@@ -24,7 +24,6 @@ const migrationLockKey = 7_392_115_204
 // statements like ALTER TABLE ... ADD COLUMN can't be repeated on SQLite.
 var migrationProbes = map[int]string{
 	2: `SELECT disable_notifications FROM channels LIMIT 0`,
-	3: `SELECT c.sponsorblock_mark, ivt.sponsorblock_mark FROM channels c, individual_video_tracking ivt LIMIT 0`,
 }
 
 type migration struct {

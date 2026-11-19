@@ -342,7 +342,6 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		// Pointer so clients that predate the field don't silently re-enable
 		// notifications for a channel that opted out.
 		DisableNotifications *bool `json:"disable_notifications"`
-		SponsorBlockMark     *bool `json:"sponsorblock_mark"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -357,12 +356,6 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 	if updateData.DisableNotifications != nil {
 		if err := api.storage.SetChannelNotificationsDisabled(id, *updateData.DisableNotifications); err != nil {
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel notifications: %v", err))
-			return
-		}
-	}
-	if updateData.SponsorBlockMark != nil {
-		if err := api.storage.SetChannelSponsorBlockMark(id, *updateData.SponsorBlockMark); err != nil {
-			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel SponsorBlock setting: %v", err))
 			return
 		}
 	}
@@ -410,7 +403,7 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 	go func() {
 		defer downloads.Finish(fv.ID)
 		dl := NewDownloader(api.config)
-		result, err := dl.DownloadVideoWithOptions(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true, false, downloadOptionsFor(fv.ID, ch.SponsorBlockMark))
+		result, err := dl.DownloadVideoWithOptions(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true, false, downloadOptionsFor(fv.ID))
 		if err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Manual download failed for video %s: %v", fv.ID, err)
 			if setErr := api.storage.SetChannelError(ch.ID, fmt.Sprintf("Manual download of %q failed: %v", fv.Title, err)); setErr != nil {
@@ -856,13 +849,11 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video s
 	}
 
 	var channelName, quality, format string
-	var sponsorBlockMark bool
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
 			channelName = ch.Name
 			quality = ch.VideoQuality
 			format = ch.VideoFormat
-			sponsorBlockMark = ch.SponsorBlockMark
 			break
 		}
 	}
@@ -902,7 +893,7 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video s
 	go func() {
 		defer downloads.Finish(feedVideo.ID)
 		dl := NewDownloader(api.config)
-		result, err := dl.DownloadVideoWithOptions(feedVideo.URL, feedVideo.ID, channelName, quality, format, true, false, downloadOptionsFor(feedVideo.ID, sponsorBlockMark))
+		result, err := dl.DownloadVideoWithOptions(feedVideo.URL, feedVideo.ID, channelName, quality, format, true, false, downloadOptionsFor(feedVideo.ID))
 		if err != nil {
 			logScopef("channel", channelID, channelName, "Manually added video download failed for %s: %v", feedVideo.ID, err)
 			if setErr := api.storage.SetChannelError(channelID, fmt.Sprintf("Manual add-video download of %q failed: %v", feedVideo.Title, err)); setErr != nil {
@@ -990,8 +981,6 @@ func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id str
 		VideoQuality   string `json:"video_quality"`
 		VideoFormat    string `json:"video_format"`
 		DownloadShorts bool   `json:"download_shorts"`
-		// Pointer so clients that predate the field leave the setting alone.
-		SponsorBlockMark *bool `json:"sponsorblock_mark"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -1002,12 +991,6 @@ func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id str
 	if err := api.storage.UpdateVideo(id, updateData.RetentionDays, updateData.DisablePruning, updateData.VideoQuality, updateData.VideoFormat, true); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video: %v", err))
 		return
-	}
-	if updateData.SponsorBlockMark != nil {
-		if err := api.storage.SetVideoSponsorBlockMark(id, *updateData.SponsorBlockMark); err != nil {
-			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video SponsorBlock setting: %v", err))
-			return
-		}
 	}
 
 	logScopef("video", id, id, "Video updated via API: %s", id)

@@ -51,9 +51,6 @@ type DownloadRequest struct {
 	DownloadShorts bool
 	PublishTime    time.Time
 
-	// SponsorBlockMark marks SponsorBlock segments as chapters (channel or video setting).
-	SponsorBlockMark bool
-
 	// Fields used when Kind == downloadKindVideo (snapshot of the Video at enqueue time)
 	VideoEntry *storage.Video
 }
@@ -169,9 +166,8 @@ func trackedDownloadFor(req DownloadRequest) ActiveDownload {
 
 // downloadOptionsFor returns the per-download options for videoID, reporting progress
 // to the download tracker.
-func downloadOptionsFor(videoID string, sponsorBlockMark bool) DownloadOptions {
+func downloadOptionsFor(videoID string) DownloadOptions {
 	return DownloadOptions{
-		SponsorBlockMark: sponsorBlockMark,
 		OnProgress: func(p DownloadProgress) {
 			downloads.Update(videoID, p)
 		},
@@ -194,7 +190,7 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store
 
 	logScopef("channel", req.ChannelID, req.ChannelName, "Attempting download for video %s (%s)", req.VideoID, req.VideoTitle)
 
-	result, err := downloader.DownloadVideoWithOptions(req.VideoURL, req.VideoID, req.ChannelName, req.Quality, req.Format, req.DownloadShorts, true, downloadOptionsFor(req.VideoID, req.SponsorBlockMark))
+	result, err := downloader.DownloadVideoWithOptions(req.VideoURL, req.VideoID, req.ChannelName, req.Quality, req.Format, req.DownloadShorts, true, downloadOptionsFor(req.VideoID))
 	if err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Download failed for video %s (%s): %v", req.VideoID, req.VideoTitle, err)
 		_ = store.SetChannelError(req.ChannelID, fmt.Sprintf("download failed for %s: %v", req.VideoID, err))
@@ -309,7 +305,7 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 	logScopef("video", vid.ID, vid.Title, "Attempting download for video: %s", vid.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(vid.URL)
-	result, err := downloader.DownloadVideoWithOptions(vid.URL, precheckedVideoID, channelName, vid.VideoQuality, vid.VideoFormat, vid.DownloadShorts, false, downloadOptionsFor(req.VideoID, vid.SponsorBlockMark))
+	result, err := downloader.DownloadVideoWithOptions(vid.URL, precheckedVideoID, channelName, vid.VideoQuality, vid.VideoFormat, vid.DownloadShorts, false, downloadOptionsFor(req.VideoID))
 	if err != nil {
 		logScopef("video", vid.ID, vid.Title, "Failed to download video %s: %v", vid.Title, err)
 		_ = store.SetVideoError(vid.ID, err.Error())
@@ -658,8 +654,6 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 			Format:         ch.VideoFormat,
 			DownloadShorts: ch.DownloadShorts,
 			PublishTime:    video.PublishTime,
-
-			SponsorBlockMark: ch.SponsorBlockMark,
 		}
 
 		select {

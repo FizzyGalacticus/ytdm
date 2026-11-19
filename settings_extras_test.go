@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,83 +111,6 @@ func TestConfigAPISubtitles(t *testing.T) {
 	}
 }
 
-func TestChannelAndVideoSponsorBlockSettingViaAPI(t *testing.T) {
-	store := newTestStorage(t)
-	api := &APIServer{config: newTestConfig(t), storage: store}
-
-	if err := store.AddChannel(storage.Channel{ID: "UCsb", Name: "SB Channel", URL: "https://www.youtube.com/channel/UCsb", SponsorBlockMark: true}); err != nil {
-		t.Fatal(err)
-	}
-	if ch, _ := store.GetChannel("UCsb"); !ch.SponsorBlockMark {
-		t.Fatal("AddChannel didn't store sponsorblock_mark")
-	}
-
-	putChannel := func(body string) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		api.updateChannel(rec, httptest.NewRequest(http.MethodPut, "/api/channels/UCsb", strings.NewReader(body)), "UCsb")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("PUT channel = %d %s", rec.Code, rec.Body.String())
-		}
-	}
-	// Clients that predate the field leave it alone.
-	putChannel(`{"retention_days": 5}`)
-	if ch, _ := store.GetChannel("UCsb"); !ch.SponsorBlockMark || ch.RetentionDays != 5 {
-		t.Fatalf("after PUT without field: %+v", ch)
-	}
-	putChannel(`{"retention_days": 5, "sponsorblock_mark": false}`)
-	if ch, _ := store.GetChannel("UCsb"); ch.SponsorBlockMark {
-		t.Fatal("sponsorblock_mark not cleared")
-	}
-
-	if err := store.AddVideo(storage.Video{ID: "vidsb123456", URL: "https://www.youtube.com/watch?v=vidsb123456", Title: "SB Video"}); err != nil {
-		t.Fatal(err)
-	}
-	putVideo := func(body string) {
-		t.Helper()
-		rec := httptest.NewRecorder()
-		api.updateVideo(rec, httptest.NewRequest(http.MethodPut, "/api/videos/vidsb123456", strings.NewReader(body)), "vidsb123456")
-		if rec.Code != http.StatusOK {
-			t.Fatalf("PUT video = %d %s", rec.Code, rec.Body.String())
-		}
-	}
-	putVideo(`{"retention_days": 3, "sponsorblock_mark": true}`)
-	if v, _ := store.GetVideo("vidsb123456"); !v.SponsorBlockMark {
-		t.Fatal("video sponsorblock_mark not set")
-	}
-	putVideo(`{"retention_days": 4}`)
-	if v, _ := store.GetVideo("vidsb123456"); !v.SponsorBlockMark || v.RetentionDays != 4 {
-		t.Fatalf("after PUT without field: %+v", v)
-	}
-
-	// GET /api/channels exposes the field for the edit modal.
-	rec := httptest.NewRecorder()
-	api.getChannels(rec, httptest.NewRequest(http.MethodGet, "/api/channels", nil))
-	var resp struct {
-		Data []map[string]any `json:"data"`
-	}
-	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if len(resp.Data) != 1 || resp.Data[0]["sponsorblock_mark"] != false {
-		t.Fatalf("GET channels = %s", rec.Body.String())
-	}
-}
-
-func TestAddVideoStoresSponsorBlockSetting(t *testing.T) {
-	store := newTestStorage(t)
-	cfg := newTestConfig(t)
-	cfg.YtDlp.Path = filepath.Join(t.TempDir(), "no-yt-dlp") // stay offline
-	api := &APIServer{config: cfg, storage: store}
-	body := `{"url": "https://www.youtube.com/watch?v=addsb123456", "title": "Given Title", "sponsorblock_mark": true}`
-	rec := httptest.NewRecorder()
-	api.addVideo(rec, httptest.NewRequest(http.MethodPost, "/api/videos", strings.NewReader(body)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("addVideo = %d %s", rec.Code, rec.Body.String())
-	}
-	if v, ok := store.GetVideo("addsb123456"); !ok || !v.SponsorBlockMark {
-		t.Fatalf("video = %+v, %v", v, ok)
-	}
-}
-
 func TestManualFeedDownloadRejectsVideoAlreadyDownloading(t *testing.T) {
 	saved := downloads
 	downloads = newDownloadTracker()
@@ -211,13 +133,12 @@ func TestManualFeedDownloadRejectsVideoAlreadyDownloading(t *testing.T) {
 	}
 }
 
-func TestDownloadRequestCarriesSponsorBlockSetting(t *testing.T) {
+func TestTrackedDownloadAndOptionsForVideoRequest(t *testing.T) {
 	d := trackedDownloadFor(DownloadRequest{Kind: downloadKindVideo, VideoID: "v1", VideoTitle: "T", VideoEntry: &storage.Video{Uploader: "Up"}})
 	if d.ScopeType != "video" || d.ScopeID != "v1" || d.ScopeName != "Up" || d.Title != "T" {
 		t.Fatalf("trackedDownloadFor(video) = %+v", d)
 	}
-	opts := downloadOptionsFor("v1", true)
-	if !opts.SponsorBlockMark || opts.OnProgress == nil {
-		t.Fatalf("downloadOptionsFor = %+v", opts)
+	if opts := downloadOptionsFor("v1"); opts.OnProgress == nil {
+		t.Fatal("downloadOptionsFor didn't wire up progress reporting")
 	}
 }
