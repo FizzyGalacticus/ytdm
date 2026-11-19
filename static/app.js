@@ -42,6 +42,50 @@ let _currentVideoGroups = {};
 let _currentSingletonVideos = {};
 let _trackedChannelIDs = new Set();
 let _pendingFilterActive = false;
+let _feedVideoLookup = {};
+let _channelsByID = {};
+let _videosByID = {};
+
+// IDs of collapse panels the user has expanded, so the periodic refresh can
+// re-open them after re-rendering instead of snapping everything shut.
+const _expandedCollapseIDs = new Set();
+
+// Snapshot of the inputs behind the last channel/video render. The periodic refresh
+// skips re-rendering when these are unchanged, so the DOM (focus, selection, hover,
+// in-flight animations) is left alone when nothing actually changed.
+let _lastChannelsRenderKey = null;
+let _lastVideosRenderKey = null;
+
+document.addEventListener('show.bs.collapse', (e) => {
+    if (e.target.id) _expandedCollapseIDs.add(e.target.id);
+});
+document.addEventListener('hide.bs.collapse', (e) => {
+    if (e.target.id) _expandedCollapseIDs.delete(e.target.id);
+});
+
+// Build a stable, selector-safe element ID from an arbitrary key (channel ID, uploader, etc.)
+const collapseDomId = (prefix, key) => {
+    const raw = String(key || '');
+    let hash = 0;
+    for (let i = 0; i < raw.length; i++) {
+        hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+    }
+    const safe = raw.replace(/[^A-Za-z0-9_-]/g, '_');
+    return `${prefix}-${safe}-${(hash >>> 0).toString(36)}`;
+};
+
+// Re-open any previously expanded collapse panels inside a freshly rendered container
+const restoreCollapseState = (container) => {
+    if (!container) return;
+    container.querySelectorAll('.collapse[id]').forEach((el) => {
+        if (!_expandedCollapseIDs.has(el.id)) return;
+        el.classList.add('show');
+        container.querySelectorAll(`[data-bs-target="#${el.id}"]`).forEach((btn) => {
+            btn.classList.remove('collapsed');
+            btn.setAttribute('aria-expanded', 'true');
+        });
+    });
+};
 
 function togglePendingFilter() {
     _pendingFilterActive = !_pendingFilterActive;
@@ -144,8 +188,16 @@ function setFormBusy(form, busy) {
 
 function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
+}
+
+// Encode a value as a JavaScript string literal safe to place inside a double-quoted
+// HTML attribute, e.g. onclick="fn(${jsArg(name)})". Handles quotes, backslashes and
+// HTML-special characters in titles and names.
+function jsArg(value) {
+    return JSON.stringify(value == null ? '' : String(value))
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 const convertToChannel = async (groupKey) => {
@@ -196,7 +248,8 @@ const downloadFeedVideo = async (channelID, videoID) => {
         });
         const data = await response.json();
         if (data.success) {
-            showToast('Download started — refresh in a moment to see progress');
+            showToast('Download started');
+            loadDownloads();
         } else {
             showToast(data.message || 'Failed to start download', true);
         }
@@ -207,7 +260,9 @@ const downloadFeedVideo = async (channelID, videoID) => {
 };
 
 const dismissFeedVideo = async (channelID, videoID) => {
-    if (!confirm('Dismiss this video? It will be treated as pruned and never downloaded or shown again.')) return;
+    const info = _feedVideoLookup[`${channelID}/${videoID}`];
+    const label = info ? `\n\nChannel: ${info.channelName}\nVideo: ${info.title}` : '';
+    if (!confirm(`Dismiss this video?${label}\n\nIt will be treated as pruned and never downloaded or shown again.`)) return;
     try {
         const response = await fetch(`${API_BASE}/channels/${channelID}/feed-videos/${videoID}/dismiss`, {
             method: 'POST',
@@ -287,14 +342,15 @@ async function loadStatus() {
         const response = await fetch(`${API_BASE}/status`);
         const data = await response.json();
         if (data.success) {
-            const versionText = data.data.yt_dlp_version ? data.data.yt_dlp_version : 'unknown';
+            const versionText = escapeHtml(data.data.yt_dlp_version || 'unknown');
             const appCommit = data.data.app_commit_short ? data.data.app_commit_short : (data.data.app_commit || 'unknown');
             document.getElementById('status').innerHTML = `
                 <span class="badge bg-success">Running</span>
                 <span class="ms-3"><strong>Channels:</strong> ${data.data.channels_count}</span>
                 <span class="ms-3"><strong>Videos:</strong> ${data.data.videos_count}</span>
                 <span class="ms-3"><strong>yt-dlp:</strong> ${versionText}</span>
-                <span class="ms-3"><strong>Commit:</strong> ${appCommit}</span>
+                <span class="ms-3"><strong>Commit:</strong> ${escapeHtml(appCommit)}</span>
+                ${data.data.uptime_seconds != null ? `<span class="ms-3" title="Started ${escapeHtml(new Date(data.data.started_at).toLocaleString())}"><strong>Uptime:</strong> ${formatUptime(data.data.uptime_seconds)}</span>` : ''}
                 ${data.data.database ? `<span class="ms-3"><strong>Database:</strong> ${escapeHtml(data.data.database === 'postgres' ? 'PostgreSQL' : 'SQLite')}</span>` : ''}
                 ${data.data.database_warning ? `<span class="badge bg-warning text-dark ms-3" title="${attr(data.data.database_warning)}"><i class="bi bi-exclamation-triangle me-1"></i>Database fallback</span>` : ''}
             `;
@@ -308,12 +364,24 @@ async function loadStatus() {
 async function loadChannels() {
     try {
         const response = await fetch(`${API_BASE}/channels`);
-        const data = await response.json();
+        const body = await response.text();
+        const renderKey = `${_pendingFilterActive}|${body}`;
+        if (renderKey === _lastChannelsRenderKey) return;
+        const data = JSON.parse(body);
+        _lastChannelsRenderKey = data.success ? renderKey : null;
         if (data.success) {
             const allChannels = (data.data || []).slice().sort((a, b) =>
                 (a.name || '').localeCompare((b.name || ''), undefined, { sensitivity: 'base' })
             );
             _trackedChannelIDs = new Set(allChannels.map(ch => ch.id).filter(Boolean));
+            _feedVideoLookup = {};
+            _channelsByID = {};
+            for (const ch of allChannels) {
+                _channelsByID[ch.id] = ch;
+                for (const fv of (ch.feed_videos || [])) {
+                    _feedVideoLookup[`${ch.id}/${fv.id}`] = { channelName: ch.name || ch.id, title: fv.title || fv.id };
+                }
+            }
             const channels = _pendingFilterActive
                 ? allChannels.filter(ch => {
                     const feedVideos = (ch.feed_videos || []).filter(fv => ch.download_shorts || !fv.is_short);
@@ -325,15 +393,15 @@ async function loadChannels() {
             } else if (channels.length === 0) {
                 document.getElementById('channelsList').innerHTML = '<p class="text-muted">No channels with pending videos</p>';
             } else {
-                document.getElementById('channelsList').innerHTML = channels.map((ch, idx) => {
+                document.getElementById('channelsList').innerHTML = channels.map((ch) => {
                     const cutoffText = ch.cutoff_date && ch.cutoff_date !== '0001-01-01T00:00:00Z' 
                         ? `<span class="badge bg-info ms-2">From: ${new Date(ch.cutoff_date).toLocaleDateString()}</span>` 
                         : '';
                     const qualityText = ch.video_quality 
-                        ? `<span class="badge bg-primary ms-2">Quality: ${ch.video_quality}</span>`
+                        ? `<span class="badge bg-primary ms-2">Quality: ${escapeHtml(ch.video_quality)}</span>`
                         : '';
                     const formatText = ch.video_format 
-                        ? `<span class="badge bg-info ms-2">Format: ${ch.video_format}</span>`
+                        ? `<span class="badge bg-info ms-2">Format: ${escapeHtml(ch.video_format)}</span>`
                         : '';
                     const downloadedCount = (ch.downloaded_videos || []).length;
                     const feedVideos = (ch.feed_videos || [])
@@ -342,7 +410,8 @@ async function loadChannels() {
                             new Date(b.published_at || 0) - new Date(a.published_at || 0)
                         );
                     const pendingCount = feedVideos.length;
-                    const collapseId = `channel-collapse-${idx}`;
+                    const collapseId = collapseDomId('channel-collapse', ch.id);
+                    const errorCollapseId = collapseDomId('channel-error', ch.id);
                     const pruningText = ch.disable_pruning
                         ? '<span class="badge bg-warning text-dark ms-2">No Prune</span>'
                         : '';
@@ -353,12 +422,12 @@ async function loadChannels() {
                     const errorSection = hasError 
                         ? `
                             <div class="mt-2">
-                                <button class="btn btn-sm btn-outline-danger collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#error-${idx}" aria-expanded="false">
+                                <button class="btn btn-sm btn-outline-danger collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${errorCollapseId}" aria-expanded="false">
                                     <i class="bi bi-chevron-down"></i> View Error Details
                                 </button>
-                                <div class="collapse mt-2" id="error-${idx}">
+                                <div class="collapse mt-2" id="${errorCollapseId}">
                                     <div class="alert alert-danger" role="alert">
-                                        <strong>Error:</strong> ${ch.last_error}<br>
+                                        <strong>Error:</strong> ${escapeHtml(ch.last_error)}<br>
                                         <small class="text-muted">At: ${formatDate(ch.last_error_time)}</small>
                                     </div>
                                 </div>
@@ -405,7 +474,7 @@ async function loadChannels() {
                         : downloadedVideos.map((video) => `
                             <div class="d-flex justify-content-between align-items-center border-bottom py-2">
                                 <div style="flex-grow: 1;">
-                                    <strong>${video.title || video.id}</strong>
+                                    <strong>${escapeHtml(video.title || video.id)}</strong>
                                     <div class="small text-muted">Downloaded: ${formatDate(video.download_date)}</div>
                                 </div>
                                 <div class="ms-2">
@@ -429,7 +498,7 @@ async function loadChannels() {
                                     <button class="btn btn-sm btn-outline-light me-2" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}" aria-expanded="false" aria-controls="${collapseId}">
                                         <i class="bi bi-chevron-expand"></i>
                                     </button>
-                                    ${thumbHtml}<strong>${ch.name}</strong>
+                                    ${thumbHtml}<strong>${escapeHtml(ch.name)}</strong>
                                     <span class="badge bg-secondary ms-2">${ch.retention_days || 'default'} days</span>
                                     <span class="badge bg-dark ms-2">${downloadedCount} downloaded</span>
                                     ${pendingCount > 0 ? `<span class="badge bg-warning text-dark ms-2" title="${pendingCount} video(s) tracked but not yet downloaded"><i class="bi bi-hourglass-split me-1"></i>${pendingCount} pending</span>` : ''}
@@ -440,16 +509,17 @@ async function loadChannels() {
                                     ${pruningText}
                                     ${ch.download_shorts ? '<span class="badge bg-success ms-2">Shorts</span>' : ''}
                                     ${ch.disable_notifications ? '<span class="badge bg-secondary ms-2" title="Webhook notifications are off for this channel"><i class="bi bi-bell-slash me-1"></i>Muted</span>' : ''}
+                                    ${ch.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                                     ${errorBadge}<br>
-                                    <small class="text-muted">${ch.url}</small><br>
+                                    <small class="text-muted">${escapeHtml(ch.url)}</small><br>
                                     <span class="last-checked">Last checked: ${formatDate(ch.last_checked)}</span>
                                     ${errorSection}
                                 </div>
                                 <div class="ms-3">
-                                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', '${ch.id}', '${ch.name.replace(/'/g, "\\'")}')">
+                                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('channel', ${jsArg(ch.id)}, ${jsArg(ch.name)})">
                                         <i class="bi bi-journal-text"></i> Logs
                                     </button>
-                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal('${ch.id}', '${ch.name.replace(/'/g, "\\'")}', ${ch.retention_days}, ${ch.disable_pruning}, '${ch.cutoff_date}', '${ch.video_quality}', '${ch.video_format}', ${ch.download_shorts}, ${ch.skip_auto_download}, ${!!ch.disable_notifications})">
+                                    <button class="btn btn-warning btn-sm me-2" onclick="openEditChannelModal(${jsArg(ch.id)})">
                                         <i class="bi bi-pencil"></i> Edit
                                     </button>
                                     <button class="btn btn-danger btn-sm" onclick="removeChannel('${ch.id}')">
@@ -465,9 +535,11 @@ async function loadChannels() {
                         </div>
                     `;
                 }).join('');
+                restoreCollapseState(document.getElementById('channelsList'));
             }
         }
     } catch (error) {
+        _lastChannelsRenderKey = null;
         document.getElementById('channelsList').innerHTML = '<p class="text-danger">Failed to load channels</p>';
     }
 }
@@ -492,7 +564,7 @@ function renderVideoRow(vid) {
                 </button>
                 <div class="collapse mt-2" id="video-error-${vid.id}">
                     <div class="alert alert-danger" role="alert">
-                        <strong>Error:</strong> ${vid.last_error}<br>
+                        <strong>Error:</strong> ${escapeHtml(vid.last_error)}<br>
                         <small class="text-muted">At: ${formatDate(vid.last_error_time)}</small>
                     </div>
                 </div>
@@ -510,23 +582,24 @@ function renderVideoRow(vid) {
     return `
         <div class="d-flex justify-content-between align-items-start border-bottom py-3">
             <div style="flex-grow: 1;">
-                <strong>${vid.title}</strong>
+                <strong>${escapeHtml(vid.title)}</strong>
                 <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
-                ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
-                ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
+                ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${escapeHtml(vid.video_quality)}</span>` : ''}
+                ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${escapeHtml(vid.video_format)}</span>` : ''}
+                ${vid.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                 ${pruningText}
                 ${downloadedText}
                 ${errorBadge}<br>
-                <small class="text-muted">${vid.url}</small><br>
+                <small class="text-muted">${escapeHtml(vid.url)}</small><br>
                 <span class="last-checked">Last checked: ${formatDate(vid.last_checked)}</span>
                 ${errorSection}
             </div>
             <div class="ms-3">
-                <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
+                <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', ${jsArg(vid.id)}, ${jsArg(vid.title || vid.id)})">
                     <i class="bi bi-journal-text"></i> Logs
                 </button>
                 ${moveBtn}
-                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
+                <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal(${jsArg(vid.id)})">
                     <i class="bi bi-pencil"></i> Edit
                 </button>
                 <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
@@ -561,7 +634,7 @@ const renderVideoGroup = (item, collapseId) => {
                     </button>
                     <div class="collapse mt-2" id="video-error-${vid.id}">
                         <div class="alert alert-danger" role="alert">
-                            <strong>Error:</strong> ${vid.last_error}<br>
+                            <strong>Error:</strong> ${escapeHtml(vid.last_error)}<br>
                             <small class="text-muted">At: ${formatDate(vid.last_error_time)}</small>
                         </div>
                     </div>
@@ -571,22 +644,23 @@ const renderVideoGroup = (item, collapseId) => {
         return `
             <div class="d-flex justify-content-between align-items-start border-bottom py-2">
                 <div style="flex-grow: 1;">
-                    <strong>${vid.title}</strong>
+                    <strong>${escapeHtml(vid.title)}</strong>
                     <span class="badge bg-secondary ms-2">${vid.retention_days || 'default'} days</span>
-                    ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${vid.video_quality}</span>` : ''}
-                    ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${vid.video_format}</span>` : ''}
+                    ${vid.video_quality ? `<span class="badge bg-primary ms-2">Quality: ${escapeHtml(vid.video_quality)}</span>` : ''}
+                    ${vid.video_format ? `<span class="badge bg-info ms-2">Format: ${escapeHtml(vid.video_format)}</span>` : ''}
+                ${vid.sponsorblock_mark ? '<span class="badge bg-info text-dark ms-2" title="SponsorBlock segments are marked as chapters"><i class="bi bi-bookmark me-1"></i>SponsorBlock</span>' : ''}
                     ${pruningText}
                     ${downloadedText}
                     ${errorBadge}<br>
-                    <small class="text-muted">${vid.url}</small><br>
+                    <small class="text-muted">${escapeHtml(vid.url)}</small><br>
                     <span class="last-checked">Added: ${formatDate(vid.added_date)} · Last checked: ${formatDate(vid.last_checked)}</span>
                     ${errorSection}
                 </div>
                 <div class="ms-3">
-                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', '${vid.id}', '${escapeHtml(vid.title || vid.id)}')">
+                    <button class="btn btn-outline-light btn-sm me-2" onclick="openScopedLogs('video', ${jsArg(vid.id)}, ${jsArg(vid.title || vid.id)})">
                         <i class="bi bi-journal-text"></i> Logs
                     </button>
-                    <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal('${vid.id}', '${escapeHtml(vid.title)}', ${vid.retention_days}, ${vid.disable_pruning}, '${vid.video_quality}', '${vid.video_format}')">
+                    <button class="btn btn-warning btn-sm me-2" onclick="openEditVideoModal(${jsArg(vid.id)})">
                         <i class="bi bi-pencil"></i> Edit
                     </button>
                     <button class="btn btn-danger btn-sm" onclick="removeVideo('${vid.id}')">
@@ -634,9 +708,15 @@ const renderVideoGroup = (item, collapseId) => {
 async function loadVideos() {
     try {
         const response = await fetch(`${API_BASE}/videos`);
-        const data = await response.json();
+        const body = await response.text();
+        // Tracked channel IDs affect the Move/Convert buttons, so they're part of the key
+        const renderKey = `${[..._trackedChannelIDs].sort().join(',')}|${body}`;
+        if (renderKey === _lastVideosRenderKey) return;
+        const data = JSON.parse(body);
+        _lastVideosRenderKey = data.success ? renderKey : null;
         if (data.success) {
             const videos = data.data || [];
+            _videosByID = Object.fromEntries(videos.map((v) => [v.id, v]));
             if (videos.length === 0) {
                 document.getElementById('videosList').innerHTML = '<p class="text-muted">No videos configured</p>';
             } else {
@@ -690,15 +770,17 @@ async function loadVideos() {
                 // Sort newest added_date first
                 items.sort((a, b) => b.sortDate - a.sortDate);
 
-                document.getElementById('videosList').innerHTML = items.map((item, idx) => {
+                document.getElementById('videosList').innerHTML = items.map((item) => {
                     if (item.type === 'group') {
-                        return renderVideoGroup(item, `video-group-${idx}`);
+                        return renderVideoGroup(item, collapseDomId('video-group', item.groupKey));
                     }
                     return renderVideoRow(item.vid);
                 }).join('');
+                restoreCollapseState(document.getElementById('videosList'));
             }
         }
     } catch (error) {
+        _lastVideosRenderKey = null;
         document.getElementById('videosList').innerHTML = '<p class="text-danger">Failed to load videos</p>';
     }
 }
@@ -723,6 +805,10 @@ async function loadConfig() {
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
             document.getElementById('maxLogEntries').value = config.max_log_entries || 100;
+            const subs = config.subtitles || {};
+            document.getElementById('subtitlesEnabled').checked = !!subs.enabled;
+            document.getElementById('subtitleLanguages').value = subs.languages || 'en';
+            document.getElementById('subtitlesAutoGenerated').checked = !!subs.auto_generated;
             document.getElementById('defaultVideoFormat').value = config.default_video_format || 'mp4';
             document.getElementById('defaultVideoQuality').value = config.default_video_quality || '';
             
@@ -925,6 +1011,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
     const disablePruning = document.getElementById('channelDisablePruning').checked;
     const skipAutoDownload = !document.getElementById('channelAutoDownload').checked;
     const disableNotifications = !document.getElementById('channelNotify').checked;
+    const sponsorBlockMark = document.getElementById('channelSponsorBlock').checked;
 
     const channelData = {
         name,
@@ -936,6 +1023,7 @@ document.getElementById('addChannelForm').addEventListener('submit', async (e) =
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
         disable_notifications: disableNotifications,
+        sponsorblock_mark: sponsorBlockMark,
     };
     if (cutoffDate) {
         channelData.cutoff_date = new Date(cutoffDate).toISOString();
@@ -1004,7 +1092,15 @@ async function setChannelVideoPruning(channelId, videoId, disablePruning) {
 }
 
 // Open edit channel modal
-function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDate, videoQuality, videoFormat, downloadShorts, skipAutoDownload, disableNotifications) {
+function openEditChannelModal(id) {
+    const ch = _channelsByID[id];
+    if (!ch) {
+        showToast('Channel data not found, please refresh', true);
+        return;
+    }
+    const { name, retention_days: retentionDays, disable_pruning: disablePruning, cutoff_date: cutoffDate,
+        video_quality: videoQuality, video_format: videoFormat, download_shorts: downloadShorts,
+        skip_auto_download: skipAutoDownload, disable_notifications: disableNotifications } = ch;
     document.getElementById('editChannelId').value = id;
     document.getElementById('editChannelName').value = name;
     document.getElementById('editChannelRetention').value = retentionDays || '';
@@ -1023,6 +1119,7 @@ function openEditChannelModal(id, name, retentionDays, disablePruning, cutoffDat
     document.getElementById('editChannelDownloadShorts').checked = downloadShorts || false;
     document.getElementById('editChannelAutoDownload').checked = !skipAutoDownload;
     document.getElementById('editChannelNotify').checked = !disableNotifications;
+    document.getElementById('editChannelSponsorBlock').checked = !!ch.sponsorblock_mark;
 
     const modal = new bootstrap.Modal(document.getElementById('editChannelModal'));
     modal.show();
@@ -1039,6 +1136,7 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
     const downloadShorts = document.getElementById('editChannelDownloadShorts').checked;
     const skipAutoDownload = !document.getElementById('editChannelAutoDownload').checked;
     const disableNotifications = !document.getElementById('editChannelNotify').checked;
+    const sponsorBlockMark = document.getElementById('editChannelSponsorBlock').checked;
 
     const updateData = {
         retention_days: retentionDays,
@@ -1048,6 +1146,7 @@ document.getElementById('saveChannelEditsBtn').addEventListener('click', async (
         download_shorts: downloadShorts,
         skip_auto_download: skipAutoDownload,
         disable_notifications: disableNotifications,
+        sponsorblock_mark: sponsorBlockMark,
     };
 
     // Only include cutoff date if it's set
@@ -1097,7 +1196,8 @@ document.getElementById('addVideoForm').addEventListener('submit', async (e) => 
                 retention_days: retention,
                 disable_pruning: disablePruning,
                 video_quality: quality,
-                video_format: format
+                video_format: format,
+                sponsorblock_mark: document.getElementById('videoSponsorBlock').checked,
             })
         });
         const data = await response.json();
@@ -1136,13 +1236,19 @@ async function removeVideo(id) {
 }
 
 // Open edit video modal
-function openEditVideoModal(id, title, retentionDays, disablePruning, videoQuality, videoFormat) {
+function openEditVideoModal(id) {
+    const vid = _videosByID[id];
+    if (!vid) {
+        showToast('Video data not found, please refresh', true);
+        return;
+    }
     document.getElementById('editVideoId').value = id;
-    document.getElementById('editVideoTitle').value = title;
-    document.getElementById('editVideoRetention').value = retentionDays || '';
-    document.getElementById('editVideoDisablePruning').checked = !!disablePruning;
-    document.getElementById('editVideoQuality').value = videoQuality || '';
-    document.getElementById('editVideoFormat').value = videoFormat || '';
+    document.getElementById('editVideoTitle').value = vid.title || '';
+    document.getElementById('editVideoRetention').value = vid.retention_days || '';
+    document.getElementById('editVideoDisablePruning').checked = !!vid.disable_pruning;
+    document.getElementById('editVideoQuality').value = vid.video_quality || '';
+    document.getElementById('editVideoFormat').value = vid.video_format || '';
+    document.getElementById('editVideoSponsorBlock').checked = !!vid.sponsorblock_mark;
 
     const modal = new bootstrap.Modal(document.getElementById('editVideoModal'));
     modal.show();
@@ -1160,7 +1266,8 @@ document.getElementById('saveVideoEditsBtn').addEventListener('click', async () 
         retention_days: retentionDays,
         disable_pruning: disablePruning,
         video_quality: videoQuality,
-        video_format: videoFormat
+        video_format: videoFormat,
+        sponsorblock_mark: document.getElementById('editVideoSponsorBlock').checked,
     };
 
     try {
@@ -1221,7 +1328,12 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
             restrict_filenames: document.getElementById('restrictFilenames').checked,
             cache_dir: document.getElementById('ytDlpCacheDir').value.trim(),
             cookies_browser: document.getElementById('cookiesBrowser').value,
-        }
+        },
+        subtitles: {
+            enabled: document.getElementById('subtitlesEnabled').checked,
+            languages: document.getElementById('subtitleLanguages').value.trim() || 'en',
+            auto_generated: document.getElementById('subtitlesAutoGenerated').checked,
+        },
     };
 
     try {
@@ -1271,6 +1383,131 @@ document.getElementById('clearLogFilterBtn').addEventListener('click', () => {
     loadLogs();
 });
 
+// ---- Download queue ----
+
+function formatUptime(totalSeconds) {
+    const s = Math.max(0, Math.floor(totalSeconds));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+}
+
+function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit++;
+    }
+    return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatEta(seconds) {
+    if (seconds == null || seconds < 0) return '';
+    if (seconds < 60) return `${seconds}s left`;
+    const m = Math.floor(seconds / 60);
+    if (m < 60) return `${m}m ${seconds % 60}s left`;
+    return `${Math.floor(m / 60)}h ${m % 60}m left`;
+}
+
+const DOWNLOAD_STAGE_LABELS = { video: 'Downloading video', audio: 'Downloading audio', media: 'Downloading', subtitles: 'Downloading subtitles' };
+
+function renderDownloadItem(d) {
+    const scope = d.scope_name ? `<span class="text-muted ms-2 small">${escapeHtml(d.scope_name)}</span>` : '';
+    const manual = d.manual ? '<span class="badge bg-secondary ms-2">Manual</span>' : '';
+    if (d.phase === 'queued') {
+        return `
+            <div class="download-item d-flex justify-content-between align-items-center py-1">
+                <div class="text-truncate"><i class="bi bi-hourglass me-2 text-muted"></i>${escapeHtml(d.title || d.video_id)}${scope}</div>
+                <span class="badge bg-dark ms-2">Queued</span>
+            </div>
+        `;
+    }
+    let label;
+    let details = '';
+    let barClass = 'progress-bar';
+    let width = 100;
+    if (d.phase === 'processing') {
+        label = d.stage ? d.stage.charAt(0).toUpperCase() + d.stage.slice(1) : 'Processing';
+        barClass += ' progress-bar-striped progress-bar-animated bg-info';
+    } else if (d.percent == null) {
+        label = DOWNLOAD_STAGE_LABELS[d.stage] || 'Starting';
+        barClass += ' progress-bar-striped progress-bar-animated';
+    } else {
+        label = DOWNLOAD_STAGE_LABELS[d.stage] || 'Downloading';
+        width = Math.max(0, Math.min(100, d.percent));
+        const parts = [`${width.toFixed(0)}%`];
+        if (d.total_bytes > 0) parts.push(`${formatBytes(d.downloaded_bytes)} of ${formatBytes(d.total_bytes)}`);
+        if (d.speed_bps > 0) parts.push(`${formatBytes(d.speed_bps)}/s`);
+        const eta = formatEta(d.eta_seconds);
+        if (eta) parts.push(eta);
+        details = parts.join(' · ');
+    }
+    return `
+        <div class="download-item py-2">
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="text-truncate"><i class="bi bi-arrow-down-circle me-2 text-success"></i><strong>${escapeHtml(d.title || d.video_id)}</strong>${scope}${manual}</div>
+                <small class="text-muted ms-2 text-nowrap">${escapeHtml(label)}</small>
+            </div>
+            <div class="progress mt-1" role="progressbar" aria-label="${attr(label)}" aria-valuenow="${width.toFixed(0)}" aria-valuemin="0" aria-valuemax="100">
+                <div class="${barClass}" style="width: ${width}%"></div>
+            </div>
+            ${details ? `<small class="text-muted">${escapeHtml(details)}</small>` : ''}
+        </div>
+    `;
+}
+
+let _lastDownloadsKey = null;
+let _lastDownloadIDs = new Set();
+let _downloadsTimer = null;
+
+async function loadDownloads() {
+    clearTimeout(_downloadsTimer);
+    let items = [];
+    try {
+        const response = await fetch(`${API_BASE}/downloads`);
+        const data = await response.json();
+        if (data.success) items = data.data || [];
+    } catch (error) {
+        // Keep showing the last state; the next poll will retry.
+        items = null;
+    }
+
+    if (items) {
+        const key = JSON.stringify(items);
+        if (key !== _lastDownloadsKey) {
+            _lastDownloadsKey = key;
+            const card = document.getElementById('downloadsCard');
+            card.classList.toggle('d-none', items.length === 0);
+            const active = items.filter((d) => d.phase !== 'queued');
+            const queued = items.filter((d) => d.phase === 'queued');
+            document.getElementById('downloadsCount').textContent = items.length
+                ? `${active.length} active${queued.length ? `, ${queued.length} queued` : ''}`
+                : '';
+            document.getElementById('downloadsList').innerHTML = items.map(renderDownloadItem).join('');
+        }
+
+        // When a download leaves the list it has finished (or failed), so refresh the
+        // channel and video lists to show the result.
+        const ids = new Set(items.map((d) => d.video_id));
+        const finished = [..._lastDownloadIDs].some((id) => !ids.has(id));
+        _lastDownloadIDs = ids;
+        if (finished) {
+            loadStatus();
+            loadChannels().then(loadVideos);
+        }
+    }
+
+    // Poll quickly while something is downloading, slowly otherwise.
+    const busy = items ? items.length > 0 : _lastDownloadIDs.size > 0;
+    _downloadsTimer = setTimeout(loadDownloads, busy ? 2000 : 15000);
+}
+
 // Initial load — channels must complete first so _trackedChannelIDs is populated
 // before videos are rendered (prevents missing Move/Convert buttons on first paint).
 loadStatus();
@@ -1278,6 +1515,7 @@ loadChannels().then(loadVideos);
 loadConfig();
 loadDatabaseInfo();
 loadLogs();
+loadDownloads();
 
 // Refresh data every 30 seconds
 setInterval(() => {

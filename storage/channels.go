@@ -347,3 +347,11 @@ func (s *Storage) ChannelLinks(id string) (url, thumbnailURL string, ok bool) {
 		WHERE cs.source_id = ? AND cs.source_channel_id = ?`, sourceYouTube, id).Scan(&url, &thumbnailURL)
 	return url, thumbnailURL, err == nil
 }
+
+// SetChannelSponsorBlockMark toggles SponsorBlock chapter marking for a channel's downloads.
+func (s *Storage) SetChannelSponsorBlockMark(id string, enabled bool) error {
+	_, err := s.db.Exec(`UPDATE channels SET sponsorblock_mark = ?
+		WHERE id = (SELECT channel_id FROM channel_sources WHERE source_id = ? AND source_channel_id = ?)`,
+		enabled, sourceYouTube, id)
+	return err
+}

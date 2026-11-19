@@ -36,7 +36,7 @@ func (s *Storage) GetChannel(id string) (Channel, bool) {
 func (s *Storage) queryChannels(whereClause string, args ...any) ([]Channel, error) {
 	query := `SELECT c.id, cs.source_channel_id, cs.url, c.name, c.last_checked, c.retention_days,
 		c.disable_pruning, c.cutoff_date, c.video_quality, c.video_format, c.download_shorts,
-		c.skip_auto_download, c.last_error, c.last_error_time, c.thumbnail_url, c.backlog_scan_complete, c.disable_notifications
+		c.skip_auto_download, c.last_error, c.last_error_time, c.thumbnail_url, c.backlog_scan_complete, c.disable_notifications, c.sponsorblock_mark
 		FROM channels c
 		JOIN channel_sources cs ON cs.channel_id = c.id AND cs.source_id = ?` + whereClause + `
 		ORDER BY c.id`
@@ -57,7 +57,7 @@ func (s *Storage) queryChannels(whereClause string, args ...any) ([]Channel, err
 		var lastChecked, cutoffDate, lastErrorTime sql.NullString
 		if err := rows.Scan(&r.pk, &r.ch.ID, &r.ch.URL, &r.ch.Name, &lastChecked, &r.ch.RetentionDays,
 			&r.ch.DisablePruning, &cutoffDate, &r.ch.VideoQuality, &r.ch.VideoFormat, &r.ch.DownloadShorts,
-			&r.ch.SkipAutoDownload, &r.ch.LastError, &lastErrorTime, &r.ch.ThumbnailURL, &r.ch.BacklogScanComplete, &r.ch.DisableNotifications); err != nil {
+			&r.ch.SkipAutoDownload, &r.ch.LastError, &lastErrorTime, &r.ch.ThumbnailURL, &r.ch.BacklogScanComplete, &r.ch.DisableNotifications, &r.ch.SponsorBlockMark); err != nil {
 			return nil, err
 		}
 		r.ch.LastChecked = nullToTime(lastChecked)
@@ -172,7 +172,7 @@ func (s *Storage) queryVideos(whereClause string, args ...any) ([]Video, error) 
 	query := `SELECT vs.source_video_id,
 		COALESCE(vs.url, 'https://www.youtube.com/watch?v=' || vs.source_video_id),
 		v.title, v.added_at, v.last_checked, ivt.retention_days, v.disable_pruning,
-		ivt.video_quality, ivt.video_format, ivt.download_shorts, vs.uploader_name,
+		ivt.video_quality, ivt.video_format, ivt.download_shorts, ivt.sponsorblock_mark, vs.uploader_name,
 		vs.uploader_source_channel_id, v.status, v.download_date, v.publish_date,
 		v.last_error, v.last_error_time
 		FROM videos v
@@ -192,7 +192,7 @@ func (s *Storage) queryVideos(whereClause string, args ...any) ([]Video, error) 
 		var status string
 		var addedAt, lastChecked, downloadDate, publishDate, lastErrorTime sql.NullString
 		if err := rows.Scan(&v.ID, &v.URL, &v.Title, &addedAt, &lastChecked, &v.RetentionDays,
-			&v.DisablePruning, &v.VideoQuality, &v.VideoFormat, &v.DownloadShorts, &v.Uploader,
+			&v.DisablePruning, &v.VideoQuality, &v.VideoFormat, &v.DownloadShorts, &v.SponsorBlockMark, &v.Uploader,
 			&v.UploaderID, &status, &downloadDate, &publishDate, &v.LastError, &lastErrorTime); err != nil {
 			return nil, err
 		}

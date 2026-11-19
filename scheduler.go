@@ -51,6 +51,9 @@ type DownloadRequest struct {
 	DownloadShorts bool
 	PublishTime    time.Time
 
+	// SponsorBlockMark marks SponsorBlock segments as chapters (channel or video setting).
+	SponsorBlockMark bool
+
 	// Fields used when Kind == downloadKindVideo (snapshot of the Video at enqueue time)
 	VideoEntry *storage.Video
 }
@@ -87,7 +90,9 @@ func runDownloadWorker(
 		wg.Add(1)
 		go func(r DownloadRequest) {
 			defer wg.Done()
+			downloads.Start(trackedDownloadFor(r))
 			execFn(ctx, r)
+			downloads.Finish(r.VideoID)
 			select {
 			case done <- r.VideoID:
 			case <-ctx.Done():
@@ -112,6 +117,10 @@ func runDownloadWorker(
 	log.Println("Download worker started")
 	defer func() {
 		wg.Wait()
+		// Requests still waiting when the worker stops will never run.
+		for _, req := range pending {
+			downloads.Finish(req.VideoID)
+		}
 		log.Println("Download worker stopped")
 	}()
 
@@ -131,11 +140,41 @@ func runDownloadWorker(
 				continue
 			}
 			if !inFlight[req.VideoID] {
+				// A manual download of the same video may already be running.
+				if !downloads.Enqueue(trackedDownloadFor(req)) {
+					continue
+				}
 				inFlight[req.VideoID] = true
 				pending = append(pending, req)
 				tryFlush()
 			}
 		}
+	}
+}
+
+// trackedDownloadFor describes a download request for the download tracker.
+func trackedDownloadFor(req DownloadRequest) ActiveDownload {
+	d := ActiveDownload{VideoID: req.VideoID, Title: req.VideoTitle}
+	switch req.Kind {
+	case downloadKindChannel:
+		d.ScopeType, d.ScopeID, d.ScopeName = "channel", req.ChannelID, req.ChannelName
+	case downloadKindVideo:
+		d.ScopeType, d.ScopeID = "video", req.VideoID
+		if req.VideoEntry != nil {
+			d.ScopeName = req.VideoEntry.Uploader
+		}
+	}
+	return d
+}
+
+// downloadOptionsFor returns the per-download options for videoID, reporting progress
+// to the download tracker.
+func downloadOptionsFor(videoID string, sponsorBlockMark bool) DownloadOptions {
+	return DownloadOptions{
+		SponsorBlockMark: sponsorBlockMark,
+		OnProgress: func(p DownloadProgress) {
+			downloads.Update(videoID, p)
+		},
 	}
 }
 
@@ -155,7 +194,7 @@ func executeChannelVideoDownload(ctx context.Context, req DownloadRequest, store
 
 	logScopef("channel", req.ChannelID, req.ChannelName, "Attempting download for video %s (%s)", req.VideoID, req.VideoTitle)
 
-	result, err := downloader.DownloadVideo(req.VideoURL, req.VideoID, req.ChannelName, req.Quality, req.Format, req.DownloadShorts, true)
+	result, err := downloader.DownloadVideoWithOptions(req.VideoURL, req.VideoID, req.ChannelName, req.Quality, req.Format, req.DownloadShorts, true, downloadOptionsFor(req.VideoID, req.SponsorBlockMark))
 	if err != nil {
 		logScopef("channel", req.ChannelID, req.ChannelName, "Download failed for video %s (%s): %v", req.VideoID, req.VideoTitle, err)
 		_ = store.SetChannelError(req.ChannelID, fmt.Sprintf("download failed for %s: %v", req.VideoID, err))
@@ -270,7 +309,7 @@ func executeStandaloneVideoDownload(ctx context.Context, req DownloadRequest, st
 	logScopef("video", vid.ID, vid.Title, "Attempting download for video: %s", vid.Title)
 
 	precheckedVideoID := extractYouTubeVideoID(vid.URL)
-	result, err := downloader.DownloadVideo(vid.URL, precheckedVideoID, channelName, vid.VideoQuality, vid.VideoFormat, vid.DownloadShorts, false)
+	result, err := downloader.DownloadVideoWithOptions(vid.URL, precheckedVideoID, channelName, vid.VideoQuality, vid.VideoFormat, vid.DownloadShorts, false, downloadOptionsFor(req.VideoID, vid.SponsorBlockMark))
 	if err != nil {
 		logScopef("video", vid.ID, vid.Title, "Failed to download video %s: %v", vid.Title, err)
 		_ = store.SetVideoError(vid.ID, err.Error())
@@ -619,6 +658,8 @@ func checkAndQueueChannel(ctx context.Context, channelID string, store *storage.
 			Format:         ch.VideoFormat,
 			DownloadShorts: ch.DownloadShorts,
 			PublishTime:    video.PublishTime,
+
+			SponsorBlockMark: ch.SponsorBlockMark,
 		}
 
 		select {
@@ -795,6 +836,7 @@ func doVideoCleanup(ctx context.Context, vid storage.Video, store *storage.Stora
 func RunScheduler(ctx context.Context, config *Config, store *storage.Storage) {
 	downloader := NewDownloader(config)
 	log.Println("Scheduler started")
+	markSchedulerAlive()
 
 	downloadQueue := make(chan DownloadRequest, 256)
 
@@ -898,6 +940,7 @@ func RunScheduler(ctx context.Context, config *Config, store *storage.Storage) {
 			log.Println("Scheduler stopped")
 			return
 		case <-manageTicker.C:
+			markSchedulerAlive()
 			syncChannelWorkers()
 			reconcile()
 			purgeExpiredVideos()

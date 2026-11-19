@@ -83,7 +83,13 @@ Primary runtime artifacts:
 - Failure alerts go through the repeat cooldown; keep new failure events rate-limited the same way
 - Delivery is asynchronous and must never block or fail a download
 
-7. Reconciliation behavior:
+7. Download extras:
+- Subtitles (global `subtitles` config) and SponsorBlock chapter marking (per-entry `sponsorblock_mark`) must never cost a download: when yt-dlp fails because of either, retry without it
+- SponsorBlock segments are only ever marked as chapters, never cut (`--sponsorblock-mark`, never `--sponsorblock-remove`)
+- Subtitle files are sidecars (`isSidecarFile`) and keep their `.<lang>.vtt` suffix through renames (`splitPortableFilename`)
+- Download progress comes from yt-dlp `--progress-template` lines with ytdm prefixes, filtered out of the output the downloader inspects
+
+8. Reconciliation behavior:
 - `ReconcileDownloadedVideos` removes orphaned downloaded-video entries whose files are missing
 - Channel records are durable and not auto-removed as "expired"
 
@@ -93,7 +99,7 @@ Primary runtime artifacts:
 - Videos: `GET/POST/DELETE /api/videos`
 - Config: `GET/PUT /api/config`
 - Cookies: `POST /api/cookies`, `POST /api/cookies/clear`
-- Status: `GET /api/status`
+- Status: `GET /api/status`, `GET /api/downloads` (queue and progress), `GET /health`
 - Notifications: `POST /api/notifications/test`
 - Database: `GET /api/database`, `POST /api/database/migrate`
 

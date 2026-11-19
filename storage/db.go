@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
@@ -102,6 +103,13 @@ func (c *dbConn) Begin() (*dbTx, error) {
 		return nil, err
 	}
 	return &dbTx{tx: tx, dialect: b.dialect, release: unlock}, nil
+}
+
+// ping runs a trivial query, honoring ctx's deadline. It is a read, so it never waits
+// for the write lock.
+func (c *dbConn) ping(ctx context.Context) error {
+	var one int
+	return c.backend().db.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
 }
 
 func (c *dbConn) Close() error {

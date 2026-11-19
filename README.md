@@ -20,6 +20,10 @@ Automated YouTube video downloader with channel monitoring, retention management
 - Concurrent downloads with configurable limits
 - SQLite (default) or PostgreSQL storage, with a command to move data between them
 - Webhook notifications (ntfy or generic JSON) for new videos, pending videos, failures, and expiring cookies
+- Subtitle files saved next to each download (uploaded subtitles, or YouTube's automatic captions as a fallback)
+- Optional SponsorBlock chapter marking per channel or video (segments are marked, never cut)
+- Live download queue with per-download progress in the web UI
+- `/health` endpoint for container health checks
 
 ## Quick Start
 
@@ -94,6 +98,12 @@ All configuration can be managed through the web UI or by editing `data/config.j
   - **download_throughput_limit**: Limit download speed (e.g. `100K`, `4.2M`)
   - **restrict_filenames**: Use yt-dlp's filename restrictions
   - **cache_dir**: Cache directory used by yt-dlp
+- **subtitles**: Subtitle files saved next to new downloads
+  - **enabled**: Save subtitles (default: true)
+  - **languages**: Comma-separated yt-dlp `--sub-langs` value (default: `en`)
+  - **auto_generated**: Fall back to YouTube's automatic captions when a video has no uploaded subtitles in a language (default: true)
+
+  Subtitles are written as `<video name>.<lang>.vtt`, which Jellyfin and other media servers load automatically, and are pruned with the video. If YouTube refuses the subtitle request (it rate-limits captions), the video is downloaded without subtitles instead of failing.
 
 ### Per-Channel Settings
 
@@ -102,6 +112,7 @@ Each channel can override the global retention with its own retention period and
 - **Retention Days**: Keep videos for N days (0 = use global setting)
 - **Keep indefinitely (disable pruning)**: Skip automatic pruning for this channel/video entry
 - **Cutoff Date**: Only download videos published on or after this date
+- **Mark SponsorBlock chapters** (`sponsorblock_mark`): Add [SponsorBlock](https://sponsor.ajay.app/) segments (sponsor reads, intros, self-promotion, and so on) to new downloads as chapters named `[SponsorBlock]: ...`, so they can be skipped from the player's chapter list. Nothing is cut from the video, so a slightly-off segment costs nothing. Also available per individually tracked video. If the SponsorBlock API is unreachable, the video is downloaded without the extra chapters.
 
 Channel monitoring discovery behavior:
 
@@ -268,7 +279,8 @@ Use **Send test** in the UI (or `POST /api/notifications/test`) to send a sample
 - `POST /api/videos` - Add a video
 - `DELETE /api/videos/{id}` - Remove a video
 
-- `PUT /api/channels/{id}` - Update channel settings, including `disable_notifications`
+- `PUT /api/channels/{id}` - Update channel settings, including `disable_notifications` and `sponsorblock_mark`
+- `PUT /api/videos/{id}` - Update video settings, including `sponsorblock_mark`
 
 ### Configuration
 - `GET /api/config` - Get configuration (includes `notifications` and the list of `notification_events`)
@@ -286,9 +298,13 @@ Use **Send test** in the UI (or `POST /api/notifications/test`) to send a sample
 - `POST /api/cookies/clear` - Clear all cookies
 
 ### Status
-- `GET /api/status` - Service status
+- `GET /api/status` - Service status (`uptime`, `uptime_seconds`, `started_at`, cached `yt_dlp_version`, ...)
+- `GET /api/downloads` - Queued and running downloads with live progress (`phase` is `queued`, `downloading` or `processing`; `percent` is null while the size is unknown)
 - `GET /api/logs` - Recent logs
   - Optional query params: `scope_type=channel|video`, `scope_id=<id>`
+
+### Health
+- `GET /health` - Health check for Docker/orchestrators. Returns `200` with `"status": "ok"` (or `"degraded"` plus `warnings` when, for example, PostgreSQL is unreachable and ytdm is on its fallback database) and `503` with `"status": "fail"` when the database doesn't answer, the download directory isn't writable, yt-dlp can't be run, or the scheduler has stopped ticking. Each component is listed under `checks`. It never starts yt-dlp, so it's cheap to poll.
 
 ## Directory Structure
 
@@ -399,7 +415,9 @@ docker build -t ytdm:latest --no-cache .
 ### Status
 
 - `GET /api/status` - Get service status
+- `GET /api/downloads` - Get queued and running downloads with progress
 - `GET /api/logs` - Get recent logs (supports `scope_type` and `scope_id` filters)
+- `GET /health` - Health check (see above)
 
 ## Directory Structure
 

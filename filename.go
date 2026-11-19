@@ -47,6 +47,16 @@ func splitPortableFilename(name string) (stem, ext string) {
 		return name, ""
 	}
 
+	// Subtitle files carry a language tag before the extension ("<name>.en.vtt"); keep
+	// it as part of the extension so renames preserve it.
+	if isSubtitleExtension(ext) {
+		stem = strings.TrimSuffix(name, ext)
+		if m := subtitleLangSuffixRe.FindString(stem); m != "" {
+			return strings.TrimSuffix(stem, m), m + ext
+		}
+		return stem, ext
+	}
+
 	return strings.TrimSuffix(name, ext), ext
 }
 
@@ -267,4 +277,21 @@ func (d *Downloader) normalizeDownloadedFilenames(channelDir, videoID string) er
 	}
 
 	return firstErr
+}
+
+// subtitleExtensions are the subtitle formats yt-dlp may write next to a video.
+var subtitleExtensions = []string{".vtt", ".srt", ".ass", ".ssa", ".lrc", ".ttml", ".srv1", ".srv2", ".srv3", ".json3"}
+
+// subtitleLangSuffixRe matches a language tag such as ".en", ".en-US", ".pt-BR",
+// ".zh-Hans" or ".en-orig" at the end of a subtitle file's stem.
+var subtitleLangSuffixRe = regexp.MustCompile(`\.[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8})*$`)
+
+func isSubtitleExtension(ext string) bool {
+	ext = strings.ToLower(ext)
+	for _, e := range subtitleExtensions {
+		if ext == e {
+			return true
+		}
+	}
+	return false
 }

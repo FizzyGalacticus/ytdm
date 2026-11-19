@@ -59,6 +59,8 @@ func StartAPIServer(ctx context.Context, config *Config, store *storage.Storage,
 	mux.HandleFunc("/api/cookies", api.handleCookies)
 	mux.HandleFunc("/api/cookies/clear", api.handleClearCookies)
 	mux.HandleFunc("/api/status", api.handleStatus)
+	mux.HandleFunc("/api/downloads", api.handleDownloads)
+	mux.HandleFunc("/health", api.handleHealth)
 	mux.HandleFunc("/api/logs", api.handleLogs)
 	mux.HandleFunc("/api/notifications/test", api.handleNotificationTest)
 	mux.HandleFunc("/api/database", api.handleDatabase)
@@ -340,6 +342,7 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 		// Pointer so clients that predate the field don't silently re-enable
 		// notifications for a channel that opted out.
 		DisableNotifications *bool `json:"disable_notifications"`
+		SponsorBlockMark     *bool `json:"sponsorblock_mark"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -354,6 +357,12 @@ func (api *APIServer) updateChannel(w http.ResponseWriter, r *http.Request, id s
 	if updateData.DisableNotifications != nil {
 		if err := api.storage.SetChannelNotificationsDisabled(id, *updateData.DisableNotifications); err != nil {
 			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel notifications: %v", err))
+			return
+		}
+	}
+	if updateData.SponsorBlockMark != nil {
+		if err := api.storage.SetChannelSponsorBlockMark(id, *updateData.SponsorBlockMark); err != nil {
+			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update channel SponsorBlock setting: %v", err))
 			return
 		}
 	}
@@ -393,9 +402,15 @@ func (api *APIServer) handleManualFeedVideoDownload(w http.ResponseWriter, r *ht
 
 	ch := *targetChannel
 	fv := *feedVideo
+	tracked := ActiveDownload{VideoID: fv.ID, Title: fv.Title, ScopeType: "channel", ScopeID: ch.ID, ScopeName: ch.Name, Manual: true}
+	if !downloads.Start(tracked) {
+		api.sendError(w, http.StatusConflict, "This video is already downloading")
+		return
+	}
 	go func() {
+		defer downloads.Finish(fv.ID)
 		dl := NewDownloader(api.config)
-		result, err := dl.DownloadVideo(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true, false)
+		result, err := dl.DownloadVideoWithOptions(fv.URL, fv.ID, ch.Name, ch.VideoQuality, ch.VideoFormat, true, false, downloadOptionsFor(fv.ID, ch.SponsorBlockMark))
 		if err != nil {
 			logScopef("channel", ch.ID, ch.Name, "Manual download failed for video %s: %v", fv.ID, err)
 			if setErr := api.storage.SetChannelError(ch.ID, fmt.Sprintf("Manual download of %q failed: %v", fv.Title, err)); setErr != nil {
@@ -841,11 +856,13 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video s
 	}
 
 	var channelName, quality, format string
+	var sponsorBlockMark bool
 	for _, ch := range api.storage.GetChannels() {
 		if ch.ID == channelID {
 			channelName = ch.Name
 			quality = ch.VideoQuality
 			format = ch.VideoFormat
+			sponsorBlockMark = ch.SponsorBlockMark
 			break
 		}
 	}
@@ -876,9 +893,16 @@ func (api *APIServer) addVideoUnderTrackedChannel(w http.ResponseWriter, video s
 
 	disablePruning := video.DisablePruning
 
+	tracked := ActiveDownload{VideoID: feedVideo.ID, Title: feedVideo.Title, ScopeType: "channel", ScopeID: channelID, ScopeName: channelName, Manual: true}
+	if !downloads.Start(tracked) {
+		logScopef("channel", channelID, channelName, "Video %s added under tracked channel; a download for it is already running", feedVideo.ID)
+		api.sendSuccess(w, map[string]string{"video_id": feedVideo.ID, "channel_id": channelID, "message": "Video added under existing channel (already downloading)"})
+		return
+	}
 	go func() {
+		defer downloads.Finish(feedVideo.ID)
 		dl := NewDownloader(api.config)
-		result, err := dl.DownloadVideo(feedVideo.URL, feedVideo.ID, channelName, quality, format, true, false)
+		result, err := dl.DownloadVideoWithOptions(feedVideo.URL, feedVideo.ID, channelName, quality, format, true, false, downloadOptionsFor(feedVideo.ID, sponsorBlockMark))
 		if err != nil {
 			logScopef("channel", channelID, channelName, "Manually added video download failed for %s: %v", feedVideo.ID, err)
 			if setErr := api.storage.SetChannelError(channelID, fmt.Sprintf("Manual add-video download of %q failed: %v", feedVideo.Title, err)); setErr != nil {
@@ -966,6 +990,8 @@ func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id str
 		VideoQuality   string `json:"video_quality"`
 		VideoFormat    string `json:"video_format"`
 		DownloadShorts bool   `json:"download_shorts"`
+		// Pointer so clients that predate the field leave the setting alone.
+		SponsorBlockMark *bool `json:"sponsorblock_mark"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&updateData); err != nil {
@@ -976,6 +1002,12 @@ func (api *APIServer) updateVideo(w http.ResponseWriter, r *http.Request, id str
 	if err := api.storage.UpdateVideo(id, updateData.RetentionDays, updateData.DisablePruning, updateData.VideoQuality, updateData.VideoFormat, true); err != nil {
 		api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video: %v", err))
 		return
+	}
+	if updateData.SponsorBlockMark != nil {
+		if err := api.storage.SetVideoSponsorBlockMark(id, *updateData.SponsorBlockMark); err != nil {
+			api.sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update video SponsorBlock setting: %v", err))
+			return
+		}
 	}
 
 	logScopef("video", id, id, "Video updated via API: %s", id)
@@ -1020,6 +1052,9 @@ func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 		"notifications":       snapshotNotifications(api.config),
 		"notification_events": NotificationEvents,
 	}
+	api.config.RLock()
+	configData["subtitles"] = api.config.Subtitles
+	api.config.RUnlock()
 	api.sendSuccess(w, configData)
 }
 
@@ -1084,6 +1119,27 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 		if val, ok := ytDlpRaw["cache_dir"].(string); ok {
 			api.config.YtDlp.CacheDir = val
 		}
+	}
+
+	if subsRaw, ok := updates["subtitles"].(map[string]interface{}); ok {
+		subs := api.config.Subtitles
+		if val, ok := subsRaw["enabled"].(bool); ok {
+			subs.Enabled = val
+		}
+		if val, ok := subsRaw["auto_generated"].(bool); ok {
+			subs.AutoGenerated = val
+		}
+		if val, ok := subsRaw["languages"].(string); ok {
+			langs, err := normalizeSubtitleLanguages(val)
+			if err != nil {
+				api.sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid subtitle languages: %v", err))
+				return
+			}
+			subs.Languages = langs
+		}
+		api.config.Lock()
+		api.config.Subtitles = subs
+		api.config.Unlock()
 	}
 
 	if raw, ok := updates["notifications"]; ok {
@@ -1199,11 +1255,17 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	api.config.RLock()
+	ytDlpPath := api.config.YtDlp.Path
+	api.config.RUnlock()
+
 	status := map[string]interface{}{
 		"channels_count":   len(api.storage.GetChannels()),
 		"videos_count":     len(api.storage.GetVideos()),
-		"uptime":           time.Now().Format(time.RFC3339),
-		"yt_dlp_version":   getYtDlpVersion(api.config.YtDlp.Path),
+		"started_at":       appStartedAt.UTC().Format(time.RFC3339),
+		"uptime":           time.Since(appStartedAt).Round(time.Second).String(),
+		"uptime_seconds":   int64(time.Since(appStartedAt).Seconds()),
+		"yt_dlp_version":   ytDlpVersion.get(ytDlpPath),
 		"app_commit":       getAppCommit(),
 		"app_commit_short": getShortAppCommit(),
 		"database":         dbManager.get().Dialect,
@@ -1212,6 +1274,15 @@ func (api *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status["database_warning"] = w
 	}
 	api.sendSuccess(w, status)
+}
+
+// handleDownloads lists queued and running downloads with their live progress.
+func (api *APIServer) handleDownloads(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	api.sendSuccess(w, downloads.Snapshot())
 }
 
 func getYtDlpVersion(ytDlpPath string) string {

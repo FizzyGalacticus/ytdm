@@ -69,6 +69,8 @@ type Channel struct {
 	BacklogScanComplete bool              `json:"backlog_scan_complete,omitempty"`
 	// DisableNotifications opts this channel out of new-video webhook notifications.
 	DisableNotifications bool `json:"disable_notifications"`
+	// SponsorBlockMark marks SponsorBlock segments as chapters in new downloads.
+	SponsorBlockMark bool `json:"sponsorblock_mark"`
 }
 
 // Video represents a specific YouTube video to monitor.
@@ -83,6 +85,7 @@ type Video struct {
 	VideoQuality     string            `json:"video_quality"`
 	VideoFormat      string            `json:"video_format"`
 	DownloadShorts   bool              `json:"download_shorts"`
+	SponsorBlockMark bool              `json:"sponsorblock_mark"`
 	Uploader         string            `json:"uploader,omitempty"`
 	UploaderID       string            `json:"uploader_id,omitempty"`
 	DownloadedVideos []DownloadedVideo `json:"downloaded_videos"`

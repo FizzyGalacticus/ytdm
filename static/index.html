@@ -44,6 +44,13 @@
             line-height: 1.35;
             padding: 0.75rem;
         }
+        .download-item + .download-item {
+            border-top: 1px solid #495057;
+        }
+        .download-item .progress {
+            height: 6px;
+            background-color: #343a40;
+        }
         .channel-row {
             border: 1px solid #495057;
             border-radius: 0.5rem;
@@ -117,6 +124,14 @@
             <div class="card-body">
                 <h5 class="card-title"><i class="bi bi-info-circle"></i> Status</h5>
                 <div id="status">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Download queue: hidden while nothing is queued or downloading -->
+        <div class="card mb-4 d-none" id="downloadsCard">
+            <div class="card-body">
+                <h5 class="card-title"><i class="bi bi-cloud-arrow-down"></i> Downloads <span class="badge bg-secondary ms-1" id="downloadsCount"></span></h5>
+                <div id="downloadsList"></div>
             </div>
         </div>
 
@@ -222,6 +237,14 @@
                                         </label>
                                     </div>
                                 </div>
+                                <div class="col-md-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="channelSponsorBlock">
+                                        <label class="form-check-label" for="channelSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
+                                            <small>Mark SponsorBlock chapters</small>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
                         </form>
                     </div>
@@ -282,6 +305,14 @@
                                         <input class="form-check-input" type="checkbox" id="videoDisablePruning">
                                         <label class="form-check-label" for="videoDisablePruning">
                                             <small>Keep indefinitely (disable pruning)</small>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="videoSponsorBlock">
+                                        <label class="form-check-label" for="videoSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
+                                            <small>Mark SponsorBlock chapters</small>
                                         </label>
                                     </div>
                                 </div>
@@ -398,6 +429,31 @@
                                     <label for="maxLogEntries" class="form-label">Max Log Entries</label>
                                     <input type="number" class="form-control" id="maxLogEntries" min="10" max="10000" required>
                                     <small class="text-muted">Per channel / video</small>
+                                </div>
+
+                                <!-- Subtitles -->
+                                <div class="col-md-3">
+                                    <label class="form-label d-block">Subtitles</label>
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="subtitlesEnabled">
+                                        <label class="form-check-label" for="subtitlesEnabled" title="Save subtitle files (.vtt) next to new downloads. Media servers like Jellyfin pick them up automatically.">
+                                            Download subtitles
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <label for="subtitleLanguages" class="form-label">Subtitle Languages</label>
+                                    <input type="text" class="form-control" id="subtitleLanguages" placeholder="en">
+                                    <small class="text-muted">Comma-separated, e.g. en,es</small>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label d-block">&nbsp;</label>
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="subtitlesAutoGenerated">
+                                        <label class="form-check-label" for="subtitlesAutoGenerated" title="When a video has no uploaded subtitles in a language, save YouTube's automatic captions instead.">
+                                            Use auto-generated captions when no uploaded subtitles exist
+                                        </label>
+                                    </div>
                                 </div>
 
                                 <!-- yt-dlp collapsible section -->
@@ -680,6 +736,15 @@
                                 </label>
                             </div>
                         </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editChannelSponsorBlock">
+                                <label class="form-check-label" for="editChannelSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
+                                    Mark SponsorBlock chapters
+                                </label>
+                                <div class="form-text">Adds chapters for sponsor reads, intros and similar segments in new downloads. Nothing is cut from the video.</div>
+                            </div>
+                        </div>
                     </form>
                 </div>
                 <div class="modal-footer border-secondary">
@@ -737,6 +802,15 @@
                                 <option value="webm">WebM</option>
                                 <option value="mkv">MKV</option>
                             </select>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="editVideoSponsorBlock">
+                                <label class="form-check-label" for="editVideoSponsorBlock" title="Mark sponsor reads, intros and other SponsorBlock segments as chapters so you can skip them. The video itself is never cut.">
+                                    Mark SponsorBlock chapters
+                                </label>
+                                <div class="form-text">Applies to the next download of this video. Nothing is cut from the video.</div>
+                            </div>
                         </div>
                     </form>
                 </div>

@@ -102,6 +102,12 @@ func main() {
 		log.Printf("Migrated %d expired downloaded video(s) to pruned list (preventing re-download)", migratedToPruned)
 	}
 
+	// Create the download directory up front so /health can check it before the first
+	// download (yt-dlp would otherwise create it lazily).
+	if err := os.MkdirAll(config.DownloadDir, 0755); err != nil {
+		log.Printf("WARNING: could not create download directory %s: %v", config.DownloadDir, err)
+	}
+
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

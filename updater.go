@@ -69,6 +69,9 @@ func updateYtDlp(ytDlpPath string) {
 		return
 	}
 
+	// The binary may have changed; pick up the new version on the next status request.
+	ytDlpVersion.invalidate()
+
 	output := stdout.String()
 	if output != "" {
 		log.Printf("yt-dlp update result: %s", output)
