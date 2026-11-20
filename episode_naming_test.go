@@ -202,6 +202,7 @@ printf '%%s\t%%s\n' %[2]q %[1]q
 func TestDownloadVideoNamesNewFilesAsEpisodesAndWritesEpisodeNFO(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.DownloadDir = t.TempDir()
+	cfg.MediaServerDownloadDir = "/youtube"
 	cfg.YtDlp.Path = fakeDownloadYtDlp(t, map[string]any{
 		"id":          "IuhG712NOak",
 		"title":       "Chess Tournament - SNL",
@@ -244,7 +245,8 @@ func TestDownloadVideoNamesNewFilesAsEpisodesAndWritesEpisodeNFO(t *testing.T) {
 		"<episode>1011044228</episode>",
 		"<aired>2026-10-11</aired>",
 		`<uniqueid type="youtube" default="true">IuhG712NOak</uniqueid>`,
-		"<thumb>" + stem + ".jpg</thumb>",
+		// Absolute, as Jellyfin sees the download directory.
+		"<thumb>/youtube/Saturday_Night_Live/" + stem + ".jpg</thumb>",
 		"</episodedetails>",
 	} {
 		if !strings.Contains(string(nfo), check) {

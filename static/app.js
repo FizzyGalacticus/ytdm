@@ -799,6 +799,7 @@ async function loadConfig() {
             document.getElementById('retentionDays').value = config.retention_days;
             document.getElementById('disablePruning').checked = !!config.disable_pruning;
             document.getElementById('downloadDir').value = config.download_dir;
+            document.getElementById('mediaServerDownloadDir').value = config.media_server_download_dir || '';
             document.getElementById('fileNamePattern').value = config.file_name_pattern;
             document.getElementById('maxConcurrent').value = config.max_concurrent_downloads;
             document.getElementById('maxLogEntries').value = config.max_log_entries || 100;
@@ -1305,6 +1306,7 @@ document.getElementById('configForm').addEventListener('submit', async (e) => {
         retention_days: parseInt(document.getElementById('retentionDays').value),
         disable_pruning: document.getElementById('disablePruning').checked,
         download_dir: document.getElementById('downloadDir').value,
+        media_server_download_dir: document.getElementById('mediaServerDownloadDir').value.trim(),
         file_name_pattern: document.getElementById('fileNamePattern').value,
         max_concurrent_downloads: parseInt(document.getElementById('maxConcurrent').value),
         max_log_entries: parseInt(document.getElementById('maxLogEntries').value) || 100,

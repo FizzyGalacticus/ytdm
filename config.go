@@ -39,19 +39,23 @@ func defaultSubtitlesConfig() SubtitlesConfig {
 // Config holds the application configuration
 type Config struct {
 	sync.RWMutex
-	CheckInterval       string              `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
-	RetentionDays       int                 `json:"retention_days"`
-	DisablePruning      bool                `json:"disable_pruning"`
-	DownloadDir         string              `json:"download_dir"`
-	FileNamePattern     string              `json:"file_name_pattern"`
-	APIPort             int                 `json:"api_port"`
-	MaxConcurrent       int                 `json:"max_concurrent_downloads"`
-	DefaultVideoFormat  string              `json:"default_video_format"`  // mp4, webm, mkv
-	DefaultVideoQuality string              `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
-	MaxLogEntries       int                 `json:"max_log_entries"`       // per-scope log ring buffer size
-	YtDlp               YtDlpConfig         `json:"yt_dlp"`
-	Notifications       NotificationsConfig `json:"notifications"`
-	Subtitles           SubtitlesConfig     `json:"subtitles"`
+	CheckInterval  string `json:"check_interval_seconds"` // Go duration string (e.g., "5m0s")
+	RetentionDays  int    `json:"retention_days"`
+	DisablePruning bool   `json:"disable_pruning"`
+	DownloadDir    string `json:"download_dir"`
+	// MediaServerDownloadDir is the download directory as the media server (Jellyfin)
+	// sees it, used for the image paths written into NFO files. Empty means the same
+	// path as DownloadDir.
+	MediaServerDownloadDir string              `json:"media_server_download_dir"`
+	FileNamePattern        string              `json:"file_name_pattern"`
+	APIPort                int                 `json:"api_port"`
+	MaxConcurrent          int                 `json:"max_concurrent_downloads"`
+	DefaultVideoFormat     string              `json:"default_video_format"`  // mp4, webm, mkv
+	DefaultVideoQuality    string              `json:"default_video_quality"` // best, 1080, 720, 480, 360 (empty = no global preference)
+	MaxLogEntries          int                 `json:"max_log_entries"`       // per-scope log ring buffer size
+	YtDlp                  YtDlpConfig         `json:"yt_dlp"`
+	Notifications          NotificationsConfig `json:"notifications"`
+	Subtitles              SubtitlesConfig     `json:"subtitles"`
 }
 
 // DefaultConfig returns a Config with default values

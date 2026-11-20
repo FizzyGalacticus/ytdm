@@ -1706,7 +1706,11 @@ func (d *Downloader) generateNFOFile(channelDir string, metadata *VideoMetadata)
 
 	thumbXML := ""
 	if localThumbnail != "" {
-		thumbXML += "  <thumb>" + escapeXML(filepath.Base(localThumbnail)) + "</thumb>\n"
+		// Jellyfin rejects relative image paths, so write the absolute path it sees.
+		d.config.RLock()
+		thumbPath := mediaServerPath(d.config.DownloadDir, d.config.MediaServerDownloadDir, localThumbnail)
+		d.config.RUnlock()
+		thumbXML += "  <thumb>" + escapeXML(thumbPath) + "</thumb>\n"
 	}
 	if metadata.Thumbnail != "" {
 		thumbXML += "  <thumb aspect=\"poster\">" + escapeXML(metadata.Thumbnail) + "</thumb>\n"

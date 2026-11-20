@@ -102,6 +102,10 @@ func main() {
 		log.Printf("Migrated %d expired downloaded video(s) to pruned list (preventing re-download)", migratedToPruned)
 	}
 
+	if fixed := RepairNFOThumbPaths(config); fixed > 0 {
+		log.Printf("Updated the thumbnail path in %d NFO file(s)", fixed)
+	}
+
 	// Create the download directory up front so /health can check it before the first
 	// download (yt-dlp would otherwise create it lazily).
 	if err := os.MkdirAll(config.DownloadDir, 0755); err != nil {

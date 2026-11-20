@@ -1012,16 +1012,17 @@ func (api *APIServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 // getConfig returns the current configuration
 func (api *APIServer) getConfig(w http.ResponseWriter, r *http.Request) {
 	configData := map[string]interface{}{
-		"check_interval_seconds":   api.config.CheckInterval,
-		"retention_days":           api.config.RetentionDays,
-		"disable_pruning":          api.config.DisablePruning,
-		"download_dir":             api.config.DownloadDir,
-		"file_name_pattern":        api.config.FileNamePattern,
-		"api_port":                 api.config.APIPort,
-		"max_concurrent_downloads": api.config.MaxConcurrent,
-		"default_video_format":     api.config.DefaultVideoFormat,
-		"default_video_quality":    api.config.DefaultVideoQuality,
-		"max_log_entries":          api.config.MaxLogEntries,
+		"check_interval_seconds":    api.config.CheckInterval,
+		"retention_days":            api.config.RetentionDays,
+		"disable_pruning":           api.config.DisablePruning,
+		"download_dir":              api.config.DownloadDir,
+		"media_server_download_dir": api.config.MediaServerDownloadDir,
+		"file_name_pattern":         api.config.FileNamePattern,
+		"api_port":                  api.config.APIPort,
+		"max_concurrent_downloads":  api.config.MaxConcurrent,
+		"default_video_format":      api.config.DefaultVideoFormat,
+		"default_video_quality":     api.config.DefaultVideoQuality,
+		"max_log_entries":           api.config.MaxLogEntries,
 		"yt_dlp": map[string]interface{}{
 			"path":                             api.config.YtDlp.Path,
 			"update_interval_seconds":          api.config.YtDlp.UpdateInterval,
@@ -1061,6 +1062,18 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if val, ok := updates["download_dir"].(string); ok {
 		api.config.DownloadDir = val
+	}
+	mediaDirChanged := false
+	if val, ok := updates["media_server_download_dir"].(string); ok {
+		val = strings.TrimSpace(val)
+		if val != "" && !filepath.IsAbs(val) && !isWindowsAbsPath(val) {
+			api.sendError(w, http.StatusBadRequest, "Media server download path must be an absolute path")
+			return
+		}
+		api.config.Lock()
+		mediaDirChanged = api.config.MediaServerDownloadDir != val
+		api.config.MediaServerDownloadDir = val
+		api.config.Unlock()
 	}
 	if val, ok := updates["file_name_pattern"].(string); ok {
 		api.config.FileNamePattern = val
@@ -1159,6 +1172,16 @@ func (api *APIServer) updateConfig(w http.ResponseWriter, r *http.Request) {
 
 	if api.logs != nil {
 		api.logs.SetMaxEntries(api.config.MaxLogEntries)
+	}
+
+	if mediaDirChanged {
+		// Point existing NFOs at the new location in the background; it walks the
+		// whole download directory.
+		go func() {
+			if fixed := RepairNFOThumbPaths(api.config); fixed > 0 {
+				log.Printf("Updated the thumbnail path in %d NFO file(s)", fixed)
+			}
+		}()
 	}
 
 	log.Println("Configuration updated via API and reloaded")
